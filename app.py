@@ -52,8 +52,10 @@ def webhook():
 
                         reply = response.text
 
-                    except Exception:
-                        reply = "দুঃখিত, এখন উত্তর দিতে পারছি না।"
+                    except Exception as e:
+                         print("Gemini Error:", e)
+                         reply = f"Error: {e}"
+                         
 
                     send_message(sender_id, reply)
 
