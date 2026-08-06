@@ -78,6 +78,7 @@ def webhook():
             for messaging_event in entry.get("messaging", []):
 
                 sender_id = messaging_event["sender"]["id"]
+                print("ADMIN ID:", sender_id)
 
                 if "message" in messaging_event:
                     if "text" not in messaging_event["message"]:
