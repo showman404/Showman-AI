@@ -120,7 +120,7 @@ def webhook():
             else:
 
                 system_prompt = SYSTEM_PROMPT
-                            try:
+            try:
                 # Gemini
                 response = gemini_client.models.generate_content(
                     model="gemini-2.5-flash",
@@ -194,3 +194,5 @@ def send_message(recipient_id, text):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
+            
