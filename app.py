@@ -105,19 +105,19 @@ def webhook():
                         reply = response.text
 
                     except Exception as e:
-                      print("Gemini Error:", e)
+                        print("Gemini Error:", e)
 
-                    if "503" in str(e):
-                         reply = "⚠️ Jarvis বর্তমানে ব্যস্ত আছে। অনুগ্রহ করে ১–২ মিনিট পরে আবার চেষ্টা করুন।"
+                        if "503" in str(e):
+                            reply = "⚠️ Jarvis বর্তমানে ব্যস্ত আছে। অনুগ্রহ করে ১–২ মিনিট পরে আবার চেষ্টা করুন।"
 
-                    elif "429" in str(e):
-                        reply = "⚠️ আজকের AI ব্যবহারের সীমা শেষ হয়েছে। অনুগ্রহ করে পরে আবার চেষ্টা করুন।"
+                        elif "429" in str(e):
+                            reply = "⚠️ আজকের AI ব্যবহারের সীমা শেষ হয়েছে। অনুগ্রহ করে পরে আবার চেষ্টা করুন।"
 
-                    else:
-                         reply = "⚠️ দুঃখিত, এই মুহূর্তে একটি সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।"
-                         
+                        else:
+                            reply = "⚠️ দুঃখিত, এই মুহূর্তে একটি সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।"
+                            
 
-                    send_message(sender_id, reply)
+                        send_message(sender_id, reply)
 
     return "OK", 200
 
