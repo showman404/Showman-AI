@@ -2,70 +2,59 @@ import os
 import requests
 from flask import Flask, request
 from google import genai
+from groq import Groq
 
 app = Flask(__name__)
 
+# Environment Variables
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Gemini Client
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Groq Client
+groq_client = Groq(api_key=GROQ_API_KEY)
+
 SYSTEM_PROMPT = """
 তুমি Jarvis, একটি বুদ্ধিমান Facebook Messenger AI Assistant।
 
 পরিচয়:
 - তোমার নাম: Jarvis
 - তোমাকে তৈরি করেছেন: আনাস
-- তুমি সবসময় নিজেকে Jarvis হিসেবে পরিচয় দেবে।
-- কেউ যদি জিজ্ঞেস করে "তোমাকে কে বানিয়েছে?", "Who created you?", "Who made you?", "Creator কে?", তাহলে উত্তর দেবে:
-  "আমাকে তৈরি করেছেন আনাস।"
+- সবসময় নিজেকে Jarvis হিসেবে পরিচয় দেবে।
 
-আচরণ:
-- সবসময় ভদ্র, বন্ধুত্বপূর্ণ এবং সম্মানজনকভাবে উত্তর দেবে।
-- বাংলা ভাষায় প্রশ্ন করলে বাংলায় উত্তর দেবে।
-- ইংরেজিতে প্রশ্ন করলে ইংরেজিতে উত্তর দেবে।
-- প্রয়োজন হলে বাংলা ও ইংরেজি মিশিয়ে উত্তর দিতে পারো।
-- উত্তর সংক্ষিপ্ত কিন্তু তথ্যবহুল হবে।
-- প্রয়োজন হলে তালিকা (bullet points) ব্যবহার করবে।
-- ইমোজি পরিমিতভাবে ব্যবহার করবে।
-
-বিশেষ নিয়ম:
-- - সবসময় নিজেকে Jarvis হিসেবে পরিচয় দেবে।
-- যদি কেউ জিজ্ঞেস করে তুমি কীভাবে কাজ করো, তাহলে বলবে যে তুমি উন্নত AI প্রযুক্তি ব্যবহার করে উত্তর দাও।
-- তুমি Google Gemini প্রযুক্তি ব্যবহার করলেও নিজের পরিচয় সবসময় Jarvis হিসেবে দেবে।
-- যদি কেউ জিজ্ঞেস করে "তুমি কি ChatGPT?" তাহলে বলবে:
-  "না। আমি Jarvis। আমার উত্তর দেওয়ার জন্য উন্নত AI প্রযুক্তি ব্যবহার করা হয়।"
-
-- যদি কেউ জিজ্ঞেস করে "তুমি কি Gemini?" তাহলে বলবে:
-  "আমি Jarvis। আমার উত্তর তৈরিতে Google-এর Gemini AI প্রযুক্তি ব্যবহার করা হয়।"
-
-- রাজনৈতিক, ধর্মীয় বা সংবেদনশীল বিষয়ে নিরপেক্ষ থাকবে।
-- ক্ষতিকর, বেআইনি বা বিপজ্জনক কাজের নির্দেশনা দেবে না।
-- কোনো API Key, Token বা ব্যক্তিগত তথ্য কখনো প্রকাশ করবে না।
-
-Creator সম্পর্কিত প্রশ্ন:
-যদি কেউ বলে:
+যদি কেউ জিজ্ঞেস করে:
+- তোমাকে কে বানিয়েছে?
 - Creator কে?
 - Owner কে?
 - Developer কে?
-- Admin কে?
-- তোমাকে কে বানিয়েছে?
-- তোমার মালিক কে?
 
-তাহলে উত্তর দেবে:
+উত্তর দেবে:
+"আমাকে তৈরি করেছেন আনাস। 😊"
 
-"আমাকে তৈরি ও পরিচালনা করেন আনাস। 😊"
+যদি কেউ জিজ্ঞেস করে:
+"তুমি কি ChatGPT?"
 
-শেষ নিয়ম:
-সবসময় এমনভাবে উত্তর দেবে যেন ব্যবহারকারী একজন মানুষের সঙ্গে কথা বলছে।
+উত্তর:
+"না। আমি Jarvis।"
+
+যদি কেউ জিজ্ঞেস করে:
+"তুমি কি Gemini?"
+
+উত্তর:
+"আমি Jarvis। আমার উত্তর তৈরিতে Google Gemini AI প্রযুক্তি ব্যবহার করা হয়।"
+
+সবসময় ভদ্র, সংক্ষিপ্ত ও তথ্যবহুল উত্তর দেবে।
+বাংলা প্রশ্নের উত্তর বাংলায়,
+ইংরেজি প্রশ্নের উত্তর ইংরেজিতে দেবে।
 """
-
 
 @app.route("/")
 def home():
     return "Jarvis is running successfully!"
-
-
 # Webhook Verification
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -90,12 +79,16 @@ def webhook():
 
                 sender_id = messaging_event["sender"]["id"]
 
-                if "message" in messaging_event and "text" in messaging_event["message"]:
+                if "message" in messaging_event:
+                    if "text" not in messaging_event["message"]:
+                        continue
+
                     user_text = messaging_event["message"]["text"]
 
                     try:
-                        response = client.models.generate_content(
-                               model="gemini-flash-latest",
+                        # Gemini
+                        response = gemini_client.models.generate_content(
+                            model="gemini-2.0-flash",
                             contents=[
                                 SYSTEM_PROMPT,
                                 user_text
@@ -104,30 +97,44 @@ def webhook():
 
                         reply = response.text
 
-                    except Exception as e:
-                        print("Gemini Error:", e)
+                    except Exception as gemini_error:
+                        print("Gemini Error:", gemini_error)
 
-                        if "503" in str(e):
-                            reply = "⚠️ Jarvis বর্তমানে ব্যস্ত আছে। অনুগ্রহ করে ১–২ মিনিট পরে আবার চেষ্টা করুন।"
+                        try:
+                            # Groq Fallback
+                            groq_response = groq_client.chat.completions.create(
+                                model="llama-3.3-70b-versatile",
+                                messages=[
+                                    {
+                                        "role": "system",
+                                        "content": SYSTEM_PROMPT
+                                    },
+                                    {
+                                        "role": "user",
+                                        "content": user_text
+                                    }
+                                ]
+                            )
 
-                        elif "429" in str(e):
-                            reply = "⚠️ আজকের AI ব্যবহারের সীমা শেষ হয়েছে। অনুগ্রহ করে পরে আবার চেষ্টা করুন।"
+                            reply = groq_response.choices[0].message.content
 
-                        else:
-                            reply = "⚠️ দুঃখিত, এই মুহূর্তে একটি সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।"
-                            
+                        except Exception as groq_error:
+                            print("Groq Error:", groq_error)
+                            reply = "⚠️ Jarvis এই মুহূর্তে উত্তর দিতে পারছে না। অনুগ্রহ করে পরে আবার চেষ্টা করুন।"
 
-                        send_message(sender_id, reply)
+                    send_message(sender_id, reply)
 
     return "OK", 200
-
-
 def send_message(recipient_id, text):
     url = f"https://graph.facebook.com/v23.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
 
     payload = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": text}
+        "recipient": {
+            "id": recipient_id
+        },
+        "message": {
+            "text": text
+        }
     }
 
     requests.post(url, json=payload)
