@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # =========================================================
-# Load Environment Variables
+# Environment Variables
 # =========================================================
 
 load_dotenv()
@@ -16,108 +16,184 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_MODEL = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-3.6-flash"
+)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 
 # =========================================================
-# Flask App
+# JARVIS Identity
+# =========================================================
+
+CREATOR_NAME = "Anas"
+
+
+# =========================================================
+# Flask
 # =========================================================
 
 app = Flask(__name__)
 
 
 # =========================================================
-# Supabase
+# Supabase Connection
 # =========================================================
 
 supabase: Client | None = None
 
 if SUPABASE_URL and SUPABASE_KEY:
+
     try:
         supabase = create_client(
             SUPABASE_URL,
             SUPABASE_KEY
         )
+
         print("Supabase connected successfully.")
+
     except Exception as e:
-        print("Supabase connection error:", e)
+
+        print(
+            "Supabase connection error:",
+            e
+        )
+
 else:
-    print("WARNING: SUPABASE_URL or SUPABASE_KEY is missing.")
+
+    print(
+        "WARNING: SUPABASE_URL or "
+        "SUPABASE_KEY is missing."
+    )
 
 
 # =========================================================
-# JARVIS System Prompt
+# User Locations
 # =========================================================
 
-SYSTEM_PROMPT = """
+user_locations = {}
+
+
+# =========================================================
+# JARVIS SYSTEM PROMPT
+# =========================================================
+
+SYSTEM_PROMPT = f"""
 তুমি JARVIS নামে একটি স্মার্ট বাংলা AI assistant।
 
-তুমি ব্যবহারকারীর সাথে স্বাভাবিক, বন্ধুসুলভ এবং সাহায্যকারীভাবে কথা বলবে।
+তোমার নির্মাতার নাম {CREATOR_NAME}।
+
+এটি একটি fixed identity fact।
+
+কেউ যদি জিজ্ঞেস করে:
+
+- তোমাকে কে বানিয়েছে?
+- তোমার নির্মাতা কে?
+- তোমার creator কে?
+- কে তোমাকে তৈরি করেছে?
+- Who created you?
+- Who made you?
+- Who is your creator?
+
+তাহলে স্পষ্টভাবে বলবে:
+
+"আমার নির্মাতা {CREATOR_NAME}।"
+
+কখনো Google, Gemini, OpenAI, Facebook,
+Meta অথবা অন্য কোনো কোম্পানি বা ব্যক্তিকে
+তোমার নির্মাতা হিসেবে দাবি করবে না।
+
+তুমি JARVIS নামে পরিচয় দিতে পারো।
+
+ব্যবহারকারীর সাথে স্বাভাবিক,
+বন্ধুসুলভ এবং সাহায্যকারীভাবে কথা বলবে।
 
 ব্যবহারকারী বাংলা ভাষায় কথা বললে বাংলায় উত্তর দেবে।
-প্রয়োজনে English ব্যবহার করা যাবে।
 
-তুমি নিজের নাম JARVIS হিসেবে পরিচয় দিতে পারো।
+প্রয়োজনে English ব্যবহার করতে পারো।
 
-তুমি কখনো নিজের সম্পর্কে মিথ্যা দাবি করবে না।
+তোমার কাছে ব্যবহারকারীর কিছু saved memory
+এবং recent conversation দেওয়া হতে পারে।
 
-তোমার কাছে ব্যবহারকারীর কিছু পুরোনো conversation এবং saved memory
-দেওয়া হতে পারে। সেগুলো প্রাসঙ্গিক হলে ব্যবহার করবে।
+সেগুলো প্রাসঙ্গিক হলে ব্যবহার করবে।
 
-কোনো পুরোনো তথ্য বর্তমান প্রশ্নের সাথে সম্পর্কিত না হলে
-অপ্রয়োজনীয়ভাবে উল্লেখ করবে না।
+অপ্রাসঙ্গিক পুরোনো তথ্য নিজে থেকে উল্লেখ করবে না।
 
-ব্যবহারকারী যদি বলে "মনে রাখো", "এটা মনে রেখো",
-"এটা মনে রাখবে" ইত্যাদি, তাহলে সেই তথ্য memory হিসেবে সংরক্ষণ
-করার জন্য system-কে নির্দেশ দেওয়া হয়েছে।
+কোনো memory-তে থাকা তথ্যকে বর্তমান প্রশ্নের
+সাথে সম্পর্ক না থাকলে জোর করে ব্যবহার করবে না।
 
-ব্যবহারকারী যদি memory মুছে ফেলতে বলে, সেই নির্দেশ অনুসরণ করবে।
+Traffic প্রশ্ন এলে system-এর traffic feature
+ব্যবহার করা হবে।
 
-রাস্তার traffic সম্পর্কিত প্রশ্ন এলে traffic feature ব্যবহার করা হবে।
+তুমি কখনো বানিয়ে live traffic information দাবি করবে না।
+
+যদি কোনো তথ্য database বা external API থেকে পাওয়া না যায়,
+তাহলে সেটা পরিষ্কারভাবে বলবে।
 """
 
 
 # =========================================================
-# Memory Helpers
+# MEMORY: Save Message
 # =========================================================
 
 def save_message(user_id, role, message):
-    """
-    Conversation permanently saves to Supabase.
-    """
 
     if not supabase:
-        return
+        return False
 
     try:
-        supabase.table("jarvis_messages").insert({
+
+        supabase.table(
+            "jarvis_messages"
+        ).insert({
             "user_id": str(user_id),
             "role": role,
             "message": message
         }).execute()
 
+        return True
+
     except Exception as e:
-        print("Memory save message error:", e)
+
+        print(
+            "Memory save message error:",
+            e
+        )
+
+        return False
 
 
-def get_recent_messages(user_id, limit=20):
-    """
-    Get recent conversation history.
-    """
+# =========================================================
+# MEMORY: Get Recent Messages
+# =========================================================
+
+def get_recent_messages(
+    user_id,
+    limit=20
+):
 
     if not supabase:
         return []
 
     try:
+
         response = (
             supabase
             .table("jarvis_messages")
-            .select("role,message,created_at")
-            .eq("user_id", str(user_id))
-            .order("created_at", desc=True)
+            .select(
+                "role,message,created_at"
+            )
+            .eq(
+                "user_id",
+                str(user_id)
+            )
+            .order(
+                "created_at",
+                desc=True
+            )
             .limit(limit)
             .execute()
         )
@@ -129,20 +205,32 @@ def get_recent_messages(user_id, limit=20):
         return rows
 
     except Exception as e:
-        print("Memory get messages error:", e)
+
+        print(
+            "Memory read messages error:",
+            e
+        )
+
         return []
 
 
-def save_memory(user_id, memory):
-    """
-    Save a permanent user memory.
-    """
+# =========================================================
+# MEMORY: Save Permanent Memory
+# =========================================================
+
+def save_memory(
+    user_id,
+    memory
+):
 
     if not supabase:
         return False
 
     try:
-        supabase.table("jarvis_memories").insert({
+
+        supabase.table(
+            "jarvis_memories"
+        ).insert({
             "user_id": str(user_id),
             "memory": memory
         }).execute()
@@ -150,25 +238,43 @@ def save_memory(user_id, memory):
         return True
 
     except Exception as e:
-        print("Memory save error:", e)
+
+        print(
+            "Memory save error:",
+            e
+        )
+
         return False
 
 
-def get_memories(user_id, limit=30):
-    """
-    Get saved memories for this user.
-    """
+# =========================================================
+# MEMORY: Get Saved Memories
+# =========================================================
+
+def get_memories(
+    user_id,
+    limit=30
+):
 
     if not supabase:
         return []
 
     try:
+
         response = (
             supabase
             .table("jarvis_memories")
-            .select("id,memory,created_at")
-            .eq("user_id", str(user_id))
-            .order("created_at", desc=False)
+            .select(
+                "id,memory,created_at"
+            )
+            .eq(
+                "user_id",
+                str(user_id)
+            )
+            .order(
+                "created_at",
+                desc=False
+            )
             .limit(limit)
             .execute()
         )
@@ -176,80 +282,120 @@ def get_memories(user_id, limit=30):
         return response.data or []
 
     except Exception as e:
-        print("Memory read error:", e)
+
+        print(
+            "Memory read error:",
+            e
+        )
+
         return []
 
 
+# =========================================================
+# MEMORY: Delete Saved Memories
+# =========================================================
+
 def delete_memories(user_id):
-    """
-    Delete all saved memories for a user.
-    """
 
     if not supabase:
         return False
 
     try:
-        supabase \
-            .table("jarvis_memories") \
-            .delete() \
-            .eq("user_id", str(user_id)) \
-            .execute()
+
+        supabase.table(
+            "jarvis_memories"
+        ).delete().eq(
+            "user_id",
+            str(user_id)
+        ).execute()
 
         return True
 
     except Exception as e:
-        print("Memory delete error:", e)
+
+        print(
+            "Memory delete error:",
+            e
+        )
+
         return False
 
+
+# =========================================================
+# MEMORY: Delete Conversation
+# =========================================================
 
 def delete_conversation(user_id):
-    """
-    Delete conversation history for a user.
-    """
 
     if not supabase:
         return False
 
     try:
-        supabase \
-            .table("jarvis_messages") \
-            .delete() \
-            .eq("user_id", str(user_id)) \
-            .execute()
+
+        supabase.table(
+            "jarvis_messages"
+        ).delete().eq(
+            "user_id",
+            str(user_id)
+        ).execute()
 
         return True
 
     except Exception as e:
-        print("Conversation delete error:", e)
+
+        print(
+            "Conversation delete error:",
+            e
+        )
+
         return False
 
 
-def build_memory_context(user_id):
-    """
-    Build memory + recent conversation context for Gemini.
-    """
+# =========================================================
+# MEMORY CONTEXT
+# =========================================================
 
-    memories = get_memories(user_id)
-    messages = get_recent_messages(user_id)
+def build_memory_context(user_id):
+
+    memories = get_memories(
+        user_id
+    )
+
+    messages = get_recent_messages(
+        user_id,
+        20
+    )
 
     context = ""
 
+
     # -----------------------------------------------------
-    # Saved Memories
+    # Permanent Memories
     # -----------------------------------------------------
 
     if memories:
 
-        context += "\n\n===== SAVED USER MEMORY =====\n"
+        context += (
+            "\n\n"
+            "===== SAVED USER MEMORY =====\n"
+        )
 
         for item in memories:
 
-            memory_text = item.get("memory", "").strip()
+            memory_text = item.get(
+                "memory",
+                ""
+            ).strip()
 
             if memory_text:
-                context += f"- {memory_text}\n"
 
-        context += "===== END SAVED MEMORY =====\n"
+                context += (
+                    f"- {memory_text}\n"
+                )
+
+        context += (
+            "===== END SAVED MEMORY =====\n"
+        )
 
 
     # -----------------------------------------------------
@@ -258,55 +404,58 @@ def build_memory_context(user_id):
 
     if messages:
 
-        context += "\n\n===== RECENT CONVERSATION =====\n"
+        context += (
+            "\n\n"
+            "===== RECENT CONVERSATION =====\n"
+        )
 
         for item in messages:
 
-            role = item.get("role", "")
-            message = item.get("message", "").strip()
+            role = item.get(
+                "role",
+                ""
+            )
+
+            message = item.get(
+                "message",
+                ""
+            ).strip()
+
 
             if not message:
                 continue
 
+
             if role == "user":
-                context += f"User: {message}\n"
+
+                context += (
+                    f"User: {message}\n"
+                )
+
 
             elif role == "assistant":
-                context += f"JARVIS: {message}\n"
 
-        context += "===== END RECENT CONVERSATION =====\n"
+                context += (
+                    f"JARVIS: {message}\n"
+                )
+
+
+        context += (
+            "===== END RECENT CONVERSATION =====\n"
+        )
 
 
     return context
 
 
 # =========================================================
-# Memory Commands
+# MEMORY COMMAND DETECTION
 # =========================================================
 
 def is_remember_command(text):
 
     keywords = [
-        "মনে রাখো",
-        "মনে রেখো",
-        "মনে রাখবে",
-        "এটা মনে রাখ",
-        "remember this",
-        "remember that",
-        "remember"
-    ]
 
-    text_lower = text.lower()
-
-    return any(
-        keyword.lower() in text_lower
-        for keyword in keywords
-    )
-
-
-def extract_memory(text):
-
-    prefixes = [
         "মনে রাখো",
         "মনে রেখো",
         "মনে রাখবে",
@@ -314,28 +463,98 @@ def extract_memory(text):
         "এটা মনে রেখো",
         "এটা মনে রাখ",
         "remember this",
-        "remember that",
-        "remember"
+        "remember that"
+
+    ]
+
+    text_lower = text.lower()
+
+    return any(
+        keyword.lower() in text_lower
+        for keyword in keywords
+    )
+
+
+# =========================================================
+# Extract Memory
+# =========================================================
+
+def extract_memory(text):
+
+    prefixes = [
+
+        "এটা মনে রাখো",
+        "এটা মনে রেখো",
+        "এটা মনে রাখ",
+        "মনে রাখো",
+        "মনে রেখো",
+        "মনে রাখবে",
+        "remember this",
+        "remember that"
+
     ]
 
     result = text.strip()
 
+
     for prefix in prefixes:
 
-        if result.lower().startswith(prefix.lower()):
+        if result.lower().startswith(
+            prefix.lower()
+        ):
 
-            result = result[len(prefix):].strip()
+            result = result[
+                len(prefix):
+            ].strip()
 
             break
 
-    return result.strip(" :,-")
 
+    return result.strip(
+        " :,-"
+    )
+
+
+# =========================================================
+# Show Memory Command
+# =========================================================
+
+def is_memory_view_command(text):
+
+    keywords = [
+
+        "আমার memory কী",
+        "আমার মেমোরি কী",
+        "আমার memory কি",
+        "আমার মেমোরি কি",
+        "কি কি মনে রেখেছ",
+        "কী কী মনে রেখেছ",
+        "আমি কী কী বলেছিলাম",
+        "what do you remember",
+        "show my memory"
+
+    ]
+
+    text_lower = text.lower()
+
+    return any(
+        keyword.lower() in text_lower
+        for keyword in keywords
+    )
+
+
+# =========================================================
+# Forget Memory Command
+# =========================================================
 
 def is_forget_command(text):
 
     keywords = [
+
         "সব memory মুছে দাও",
         "সব মেমোরি মুছে দাও",
+        "সব memory মুছে ফেল",
+        "সব মেমোরি মুছে ফেল",
         "সবকিছু ভুলে যাও",
         "সব ভুলে যাও",
         "আমার memory মুছে দাও",
@@ -343,26 +562,7 @@ def is_forget_command(text):
         "forget everything",
         "forget all",
         "clear memory"
-    ]
 
-    text_lower = text.lower()
-
-    return any(
-        keyword.lower() in text_lower
-        for keyword in keywords
-    )
-
-
-def is_memory_view_command(text):
-
-    keywords = [
-        "আমার memory কী",
-        "আমার মেমোরি কী",
-        "কি কি মনে রেখেছ",
-        "কী কী মনে রেখেছ",
-        "আমি কী কী বলেছিলাম",
-        "what do you remember",
-        "show my memory"
     ]
 
     text_lower = text.lower()
@@ -374,27 +574,41 @@ def is_memory_view_command(text):
 
 
 # =========================================================
-# Gemini AI
+# GEMINI
 # =========================================================
 
-def ask_gemini(user_id, user_text, extra_prompt=""):
+def ask_gemini(
+    user_id,
+    user_text,
+    extra_prompt=""
+):
 
     if not GEMINI_API_KEY:
 
-        return "দুঃখিত, Gemini API Key সেট করা হয়নি।"
+        return (
+            "দুঃখিত, Gemini API Key "
+            "সেট করা হয়নি।"
+        )
 
 
     url = (
-        "https://generativelanguage.googleapis.com/v1beta/"
+        "https://generativelanguage.googleapis.com/"
+        "v1beta/"
         f"models/{GEMINI_MODEL}:generateContent"
         f"?key={GEMINI_API_KEY}"
     )
 
 
-    memory_context = build_memory_context(user_id)
-
+    # -----------------------------------------------------
+    # Build Prompt
+    # -----------------------------------------------------
 
     prompt = SYSTEM_PROMPT
+
+
+    memory_context = build_memory_context(
+        user_id
+    )
 
 
     if memory_context:
@@ -404,13 +618,25 @@ def ask_gemini(user_id, user_text, extra_prompt=""):
 
     if extra_prompt:
 
-        prompt += "\n\n===== EXTRA INSTRUCTIONS =====\n"
+        prompt += (
+            "\n\n"
+            "===== EXTRA INSTRUCTIONS =====\n"
+        )
+
         prompt += extra_prompt
 
 
-    prompt += "\n\n===== CURRENT USER MESSAGE =====\n"
+    prompt += (
+        "\n\n"
+        "===== CURRENT USER MESSAGE =====\n"
+    )
+
     prompt += user_text
 
+
+    # -----------------------------------------------------
+    # Gemini Payload
+    # -----------------------------------------------------
 
     payload = {
 
@@ -458,22 +684,32 @@ def ask_gemini(user_id, user_text, extra_prompt=""):
 
         if response.status_code != 200:
 
-            print("Gemini Error:", response.text)
+            print(
+                "Gemini Error:",
+                response.text
+            )
 
             return (
-                "দুঃখিত, এই মুহূর্তে AI উত্তর দিতে পারছে না।"
+                "দুঃখিত, এই মুহূর্তে "
+                "AI উত্তর দিতে পারছে না।"
             )
 
 
         data = response.json()
 
 
-        candidates = data.get("candidates", [])
+        candidates = data.get(
+            "candidates",
+            []
+        )
 
 
         if not candidates:
 
-            return "দুঃখিত, কোনো উত্তর পাওয়া যায়নি."
+            return (
+                "দুঃখিত, কোনো উত্তর "
+                "পাওয়া যায়নি।"
+            )
 
 
         parts = (
@@ -485,7 +721,10 @@ def ask_gemini(user_id, user_text, extra_prompt=""):
 
         if not parts:
 
-            return "দুঃখিত, কোনো উত্তর পাওয়া যায়নি."
+            return (
+                "দুঃখিত, কোনো উত্তর "
+                "পাওয়া যায়নি।"
+            )
 
 
         return parts[0].get(
@@ -496,26 +735,38 @@ def ask_gemini(user_id, user_text, extra_prompt=""):
 
     except Exception as e:
 
-        print("Gemini Exception:", e)
+        print(
+            "Gemini Exception:",
+            e
+        )
 
-        return "দুঃখিত, AI সার্ভিসে সমস্যা হয়েছে।"
+        return (
+            "দুঃখিত, AI সার্ভিসে "
+            "সমস্যা হয়েছে।"
+        )
 
 
 # =========================================================
-# Facebook Messenger
+# FACEBOOK MESSENGER
 # =========================================================
 
-def send_message(recipient_id, text):
+def send_message(
+    recipient_id,
+    text
+):
 
     if not PAGE_ACCESS_TOKEN:
 
-        print("PAGE_ACCESS_TOKEN নেই।")
+        print(
+            "PAGE_ACCESS_TOKEN নেই।"
+        )
 
         return
 
 
     url = (
-        "https://graph.facebook.com/v20.0/me/messages"
+        "https://graph.facebook.com/"
+        "v20.0/me/messages"
         f"?access_token={PAGE_ACCESS_TOKEN}"
     )
 
@@ -567,7 +818,7 @@ def send_message(recipient_id, text):
 
 
 # =========================================================
-# Traffic Detection
+# TRAFFIC DETECTION
 # =========================================================
 
 TRAFFIC_KEYWORDS = [
@@ -603,7 +854,7 @@ def is_traffic_question(text):
 
 
 # =========================================================
-# Google Routes API
+# GOOGLE ROUTES API
 # =========================================================
 
 def get_traffic(
@@ -614,7 +865,11 @@ def get_traffic(
 
     if not GOOGLE_MAPS_API_KEY:
 
-        return None, "GOOGLE_MAPS_API_KEY সেট করা হয়নি।"
+        return (
+            None,
+            "GOOGLE_MAPS_API_KEY "
+            "সেট করা হয়নি।"
+        )
 
 
     url = (
@@ -625,7 +880,8 @@ def get_traffic(
 
     headers = {
 
-        "Content-Type": "application/json",
+        "Content-Type":
+            "application/json",
 
         "X-Goog-Api-Key":
             GOOGLE_MAPS_API_KEY,
@@ -710,7 +966,8 @@ def get_traffic(
 
             return (
                 None,
-                "Google Maps থেকে traffic তথ্য পাওয়া যায়নি।"
+                "Google Maps থেকে "
+                "traffic তথ্য পাওয়া যায়নি।"
             )
 
 
@@ -734,34 +991,25 @@ def get_traffic(
         route = routes[0]
 
 
-        duration_text = route.get(
-            "duration",
-            ""
-        )
-
-
-        static_duration_text = route.get(
-            "staticDuration",
-            ""
-        )
-
-
-        distance_meters = route.get(
-            "distanceMeters",
-            0
-        )
-
-
         return {
 
             "duration":
-                duration_text,
+                route.get(
+                    "duration",
+                    ""
+                ),
 
             "static_duration":
-                static_duration_text,
+                route.get(
+                    "staticDuration",
+                    ""
+                ),
 
             "distance_meters":
-                distance_meters
+                route.get(
+                    "distanceMeters",
+                    0
+                )
 
         }, None
 
@@ -775,12 +1023,13 @@ def get_traffic(
 
         return (
             None,
-            "Google Maps-এর সাথে যোগাযোগ করা যাচ্ছে না।"
+            "Google Maps-এর সাথে "
+            "যোগাযোগ করা যাচ্ছে না।"
         )
 
 
 # =========================================================
-# Traffic Reply
+# TRAFFIC REPLY
 # =========================================================
 
 def traffic_reply(
@@ -836,13 +1085,17 @@ def traffic_reply(
             return 0
 
 
-    traffic_seconds = duration_to_seconds(
-        duration
+    traffic_seconds = (
+        duration_to_seconds(
+            duration
+        )
     )
 
 
-    normal_seconds = duration_to_seconds(
-        static_duration
+    normal_seconds = (
+        duration_to_seconds(
+            static_duration
+        )
     )
 
 
@@ -867,7 +1120,8 @@ def traffic_reply(
     elif delay_seconds <= 600:
 
         traffic_status = (
-            "🟡 হালকা থেকে মাঝারি জ্যাম আছে।"
+            "🟡 হালকা থেকে মাঝারি "
+            "জ্যাম আছে।"
         )
 
     elif delay_seconds <= 1200:
@@ -889,18 +1143,20 @@ def traffic_reply(
 
         f"📍 গন্তব্য: {destination}\n"
 
-        f"🛣️ দূরত্ব: {distance_km:.1f} কিমি\n"
+        f"🛣️ দূরত্ব: "
+        f"{distance_km:.1f} কিমি\n"
 
         f"{traffic_status}\n\n"
 
-        "Google Maps-এর বর্তমান traffic data "
-        "অনুযায়ী এই রিপোর্ট দেওয়া হয়েছে।"
+        "Google Maps-এর বর্তমান "
+        "traffic data অনুযায়ী "
+        "এই রিপোর্ট দেওয়া হয়েছে।"
 
     )
 
 
 # =========================================================
-# Webhook Verification
+# WEBHOOK VERIFICATION
 # =========================================================
 
 @app.route(
@@ -930,11 +1186,14 @@ def verify_webhook():
         return challenge, 200
 
 
-    return "Verification failed", 403
+    return (
+        "Verification failed",
+        403
+    )
 
 
 # =========================================================
-# Messenger Webhook
+# MESSENGER WEBHOOK
 # =========================================================
 
 @app.route(
@@ -953,9 +1212,14 @@ def webhook():
         return "OK", 200
 
 
-    if data.get("object") != "page":
+    if data.get(
+        "object"
+    ) != "page":
 
-        return "Not a page event", 404
+        return (
+            "Not a page event",
+            404
+        )
 
 
     for entry in data.get(
@@ -989,72 +1253,7 @@ def webhook():
 
 
             # =================================================
-            # Location Message
-            # =================================================
-
-            if "message" in messaging_event:
-
-                message = messaging_event[
-                    "message"
-                ]
-
-
-                attachments = message.get(
-                    "attachments",
-                    []
-                )
-
-
-                for attachment in attachments:
-
-                    if attachment.get(
-                        "type"
-                    ) == "location":
-
-                        payload = attachment.get(
-                            "payload",
-                            {}
-                        )
-
-
-                        coordinates = payload.get(
-                            "coordinates",
-                            {}
-                        )
-
-
-                        latitude = coordinates.get(
-                            "lat"
-                        )
-
-
-                        longitude = coordinates.get(
-                            "long"
-                        )
-
-
-                        if (
-                            latitude is not None
-                            and longitude is not None
-                        ):
-
-                            send_message(
-
-                                sender_id,
-
-                                "📍 তোমার Location পেয়েছি!\n"
-                                "এখন যে জায়গায় যেতে চাও, "
-                                "সেই জায়গার নাম লিখে পাঠাও।\n\n"
-                                "যেমন: Bashundhara City"
-
-                            )
-
-
-                        continue
-
-
-            # =================================================
-            # Text Message
+            # Message
             # =================================================
 
             if "message" not in messaging_event:
@@ -1066,6 +1265,81 @@ def webhook():
                 "message"
             ]
 
+
+            # =================================================
+            # LOCATION
+            # =================================================
+
+            attachments = message.get(
+                "attachments",
+                []
+            )
+
+
+            for attachment in attachments:
+
+                if attachment.get(
+                    "type"
+                ) != "location":
+
+                    continue
+
+
+                payload = attachment.get(
+                    "payload",
+                    {}
+                )
+
+
+                coordinates = payload.get(
+                    "coordinates",
+                    {}
+                )
+
+
+                latitude = coordinates.get(
+                    "lat"
+                )
+
+
+                longitude = coordinates.get(
+                    "long"
+                )
+
+
+                if (
+                    latitude is not None
+                    and longitude is not None
+                ):
+
+                    user_locations[
+                        sender_id
+                    ] = {
+
+                        "latitude":
+                            latitude,
+
+                        "longitude":
+                            longitude
+
+                    }
+
+
+                    send_message(
+
+                        sender_id,
+
+                        "📍 তোমার Location পেয়েছি!\n\n"
+                        "এখন যে জায়গায় যেতে চাও, "
+                        "সেই জায়গার নাম লিখে পাঠাও।\n\n"
+                        "যেমন: Bashundhara City"
+
+                    )
+
+
+            # =================================================
+            # TEXT
+            # =================================================
 
             if "text" not in message:
 
@@ -1087,14 +1361,18 @@ def webhook():
             # =================================================
 
             save_message(
+
                 sender_id,
+
                 "user",
+
                 user_text
+
             )
 
 
             # =================================================
-            # MEMORY COMMAND
+            # REMEMBER COMMAND
             # =================================================
 
             if is_remember_command(
@@ -1108,51 +1386,54 @@ def webhook():
 
                 if len(memory_text) < 2:
 
-                    send_message(
-
-                        sender_id,
-
-                        "🧠 কী বিষয়টা মনে রাখতে হবে?"
-                    )
-
-                    continue
-
-
-                success = save_memory(
-
-                    sender_id,
-                    memory_text
-
-                )
-
-
-                if success:
-
                     reply = (
-                        "🧠 ঠিক আছে! "
-                        "এটা আমি মনে রাখলাম।"
+                        "🧠 কী বিষয়টা "
+                        "মনে রাখতে হবে?"
                     )
 
                 else:
 
-                    reply = (
-                        "দুঃখিত, memory save করতে "
-                        "সমস্যা হয়েছে।"
+                    success = save_memory(
+
+                        sender_id,
+
+                        memory_text
+
                     )
+
+
+                    if success:
+
+                        reply = (
+                            "🧠 ঠিক আছে! "
+                            "এটা আমি মনে রাখলাম।"
+                        )
+
+                    else:
+
+                        reply = (
+                            "⚠️ Memory save করতে "
+                            "সমস্যা হয়েছে।"
+                        )
 
 
                 save_message(
 
                     sender_id,
+
                     "assistant",
+
                     reply
 
                 )
 
 
                 send_message(
+
                     sender_id,
+
                     reply
+
                 )
 
 
@@ -1176,14 +1457,17 @@ def webhook():
 
                     reply = (
                         "🧠 এখনো তোমার জন্য "
-                        "কোনো আলাদা memory save করা নেই।"
+                        "কোনো আলাদা memory "
+                        "save করা নেই।"
                     )
 
                 else:
 
                     lines = [
+
                         "🧠 তোমার সম্পর্কে "
                         "আমি যেগুলো মনে রেখেছি:\n"
+
                     ]
 
 
@@ -1199,7 +1483,8 @@ def webhook():
 
 
                         lines.append(
-                            f"{index}. {memory_text}"
+                            f"{index}. "
+                            f"{memory_text}"
                         )
 
 
@@ -1211,15 +1496,20 @@ def webhook():
                 save_message(
 
                     sender_id,
+
                     "assistant",
+
                     reply
 
                 )
 
 
                 send_message(
+
                     sender_id,
+
                     reply
+
                 )
 
 
@@ -1255,8 +1545,9 @@ def webhook():
 
                     reply = (
                         "🧹 ঠিক আছে। "
-                        "তোমার saved memory এবং "
-                        "conversation history মুছে দিয়েছি।"
+                        "তোমার saved memory "
+                        "এবং conversation "
+                        "history মুছে দিয়েছি।"
                     )
 
                 else:
@@ -1268,8 +1559,11 @@ def webhook():
 
 
                 send_message(
+
                     sender_id,
+
                     reply
+
                 )
 
 
@@ -1277,20 +1571,59 @@ def webhook():
 
 
             # =================================================
-            # Traffic Feature
+            # TRAFFIC
             # =================================================
 
             if is_traffic_question(
                 user_text
             ):
 
+                if sender_id not in user_locations:
+
+                    reply = (
+
+                        "🚦 জ্যামের অবস্থা "
+                        "দেখতে তোমার বর্তমান "
+                        "Location দরকার।\n\n"
+
+                        "Messenger-এর "
+                        "📎/Location অপশন থেকে "
+                        "তোমার Location পাঠাও।"
+
+                    )
+
+
+                    save_message(
+
+                        sender_id,
+
+                        "assistant",
+
+                        reply
+
+                    )
+
+
+                    send_message(
+
+                        sender_id,
+
+                        reply
+
+                    )
+
+
+                    continue
+
+
                 send_message(
 
                     sender_id,
 
-                    "🚗 ঠিক আছে! "
-                    "Google Maps-এর traffic data "
-                    "দেখে জানাচ্ছি..."
+                    "🚗 ঠিক আছে! তোমার "
+                    "Location পেয়েছি।\n"
+                    "Google Maps-এর traffic "
+                    "data দেখে জানাচ্ছি..."
 
                 )
 
@@ -1338,19 +1671,118 @@ def webhook():
                 )
 
 
-                # -------------------------------------------------
-                # Current version still requires Messenger location.
-                # We are keeping the existing traffic system intact.
-                # -------------------------------------------------
+                if len(destination) < 3:
+
+                    reply = (
+
+                        "📍 তোমার Location পেয়েছি।\n\n"
+                        "এখন গন্তব্যের নাম লিখো।\n\n"
+                        "যেমন:\n"
+                        "➡️ Farmgate\n"
+                        "➡️ Gulshan 1\n"
+                        "➡️ Airport"
+
+                    )
+
+
+                    save_message(
+
+                        sender_id,
+
+                        "assistant",
+
+                        reply
+
+                    )
+
+
+                    send_message(
+
+                        sender_id,
+
+                        reply
+
+                    )
+
+
+                    continue
+
+
+                location = user_locations[
+                    sender_id
+                ]
+
+
+                traffic_data, error = get_traffic(
+
+                    location[
+                        "latitude"
+                    ],
+
+                    location[
+                        "longitude"
+                    ],
+
+                    destination
+
+                )
+
+
+                if error:
+
+                    reply = (
+                        "⚠️ " + error
+                    )
+
+
+                    save_message(
+
+                        sender_id,
+
+                        "assistant",
+
+                        reply
+
+                    )
+
+
+                    send_message(
+
+                        sender_id,
+
+                        reply
+
+                    )
+
+
+                    continue
+
+
+                reply = traffic_reply(
+
+                    traffic_data,
+
+                    destination
+
+                )
+
+
+                save_message(
+
+                    sender_id,
+
+                    "assistant",
+
+                    reply
+
+                )
+
 
                 send_message(
 
                     sender_id,
 
-                    "🚦 Traffic feature-এর জন্য "
-                    "Messenger Location পাঠানো প্রয়োজন।\n\n"
-                    "📍 Location পাঠানোর পর "
-                    "আবার destination লিখো।"
+                    reply
 
                 )
 
@@ -1359,7 +1791,7 @@ def webhook():
 
 
             # =================================================
-            # Admin Mode
+            # ADMIN
             # =================================================
 
             if (
@@ -1367,18 +1799,18 @@ def webhook():
                 and sender_id == ADMIN_ID
             ):
 
-                admin_prompt = """
-
-তুমি এখন তোমার Admin-এর সাথে কথা বলছো।
+                admin_prompt = f"""
+তুমি এখন তোমার নির্মাতা এবং Admin {CREATOR_NAME}-এর সাথে কথা বলছো।
 
 Admin-এর সাথে সম্মানজনক কিন্তু বন্ধুসুলভভাবে কথা বলবে।
 
-Admin-এর প্রশ্নের সর্বোচ্চ সাহায্য করবে।
+Programming, debugging, server,
+Facebook Messenger, Google Maps,
+Gemini API, Supabase এবং JARVIS
+সম্পর্কিত বিষয়ে সর্বোচ্চ সাহায্য করবে।
 
-Admin চাইলে programming, debugging, server,
-Facebook Messenger, Google Maps, Gemini API,
-Supabase এবং JARVIS সম্পর্কিত বিষয়ে সাহায্য করবে।
-
+মনে রাখবে:
+JARVIS-এর নির্মাতা হলেন {CREATOR_NAME}।
 """
 
 
@@ -1417,7 +1849,7 @@ Supabase এবং JARVIS সম্পর্কিত বিষয়ে সাহ�
 
 
             # =================================================
-            # Normal User
+            # NORMAL USER
             # =================================================
 
             response = ask_gemini(
@@ -1457,7 +1889,7 @@ Supabase এবং JARVIS সম্পর্কিত বিষয়ে সাহ�
 
 
 # =========================================================
-# Home / Health Check
+# HEALTH CHECK
 # =========================================================
 
 @app.route(
@@ -1466,11 +1898,13 @@ Supabase এবং JARVIS সম্পর্কিত বিষয়ে সাহ�
 )
 def home():
 
-    return "JARVIS is running successfully."
+    return (
+        "JARVIS is running successfully."
+    )
 
 
 # =========================================================
-# Run App
+# RUN
 # =========================================================
 
 if __name__ == "__main__":
