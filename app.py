@@ -1,1569 +1,660 @@
 import os
-import re
-import base64
-import logging
 import requests
-
 from flask import Flask, request
 from dotenv import load_dotenv
 
-
-# ============================================================
-# LOAD ENV
-# ============================================================
+# =========================
+# Load Environment Variables
+# =========================
 
 load_dotenv()
 
+PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+ADMIN_ID = os.getenv("ADMIN_ID")
+
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_SECRET_KEY", "").strip() or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+# =========================
+# Flask App
+# =========================
+
 app = Flask(__name__)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+# =========================
+# User Locations
+# =========================
 
+user_locations = {}
 
-# ============================================================
-# ENV
-# ============================================================
-
-PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN", "").strip()
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-3.6-flash"
-).strip()
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv(
-    "GROQ_MODEL",
-    "llama-3.3-70b-versatile"
-).strip()
-
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
-
-ADMIN_ID = os.getenv("ADMIN_ID", "").strip()
-
-SUPABASE_URL = os.getenv(
-    "SUPABASE_URL",
-    ""
-).strip().rstrip("/")
-
-SUPABASE_KEY = (
-    os.getenv("SUPABASE_SECRET_KEY", "").strip()
-    or
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-)
-
-
-# ============================================================
-# CONSTANTS
-# ============================================================
-
-MESSENGER_SEND_URL = (
-    "https://graph.facebook.com/v20.0/me/messages"
-)
-
-MAX_HISTORY_MESSAGES = 30
-MAX_MEMORY_ITEMS = 20
-REQUEST_TIMEOUT = 45
-
-
-# ============================================================
-# JARVIS PERSONALITY
-# ============================================================
+# =========================
+# JARVIS System Prompt
+# =========================
 
 SYSTEM_PROMPT = """
-তুমি Jarvis — Anas-এর তৈরি ব্যক্তিগত AI assistant।
+তুমি JARVIS নামে একটি স্মার্ট বাংলা AI assistant।
 
-তোমার নির্মাতা:
-Anas
+তোমার ব্যবহারকারীর সাথে স্বাভাবিক, বন্ধুসুলভ এবং সাহায্যকারীভাবে কথা বলবে।
 
-অত্যন্ত গুরুত্বপূর্ণ:
+ব্যবহারকারী বাংলা ভাষায় কথা বললে বাংলায় উত্তর দেবে।
+প্রয়োজনে English ব্যবহার করা যাবে।
 
-1. তোমার creator/নির্মাতা হলো Anas।
-2. কেউ যদি জিজ্ঞেস করে তোমাকে কে বানিয়েছে,
-   কে তৈরি করেছে, creator কে, maker কে—
-   উত্তর হবে: "আমাকে Anas তৈরি করেছেন।"
-3. Google, Gemini, Groq, Meta, Facebook বা অন্য কোনো
-   কোম্পানিকে তোমার creator হিসেবে বলবে না।
-4. Gemini ও Groq শুধু AI engine/provider।
-5. তুমি নিজেকে Jarvis হিসেবে পরিচয় দেবে।
-6. ব্যবহারকারীর saved memory এবং আগের conversation
-   ব্যবহার করবে।
-7. তথ্য না জানলে বানিয়ে বলবে না।
-8. User বাংলা লিখলে বাংলায় উত্তর দেবে।
-9. User ইংরেজি লিখলে ইংরেজিতে উত্তর দেবে।
-10. স্বাভাবিক ও বন্ধুসুলভভাবে উত্তর দেবে।
+তুমি নিজের নাম JARVIS হিসেবে পরিচয় দিতে পারো।
+
+তুমি কখনো নিজের সম্পর্কে মিথ্যা দাবি করবে না।
+
+তোমার নির্মাতা/Creator হলেন Anas।
+কেউ জিজ্ঞেস করলে বলবে: "আমাকে Anas তৈরি করেছেন।"
+Google, Gemini, Groq, Meta বা অন্য কোনো কোম্পানিকে তোমার creator বলবে না।
+
+ব্যবহারকারী যদি রাস্তার জ্যাম বা traffic সম্পর্কে জানতে চায়,
+তাহলে traffic feature ব্যবহার করার জন্য প্রয়োজনীয় location/destination
+চাও এবং পাওয়া তথ্যের ভিত্তিতে পরিষ্কারভাবে উত্তর দাও।
 """
 
+# =========================
+# Gemini AI
+# =========================
 
-# ============================================================
-# SUPABASE
-# ============================================================
+def ask_gemini(user_text, extra_prompt=""):
+    if not GEMINI_API_KEY:
+        return "দুঃখিত, Gemini API Key সেট করা হয়নি।"
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/"
+        f"models/{GEMINI_MODEL}:generateContent"
+        f"?key={GEMINI_API_KEY}"
+    )
+
+    prompt = SYSTEM_PROMPT
+
+    if extra_prompt:
+        prompt += "\n\n" + extra_prompt
+
+    prompt += "\n\nব্যবহারকারীর বার্তা:\n" + user_text
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 1024
+        }
+    }
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=60
+        )
+
+        if response.status_code != 200:
+            print("Gemini Error:", response.text)
+            return "দুঃখিত, এই মুহূর্তে AI উত্তর দিতে পারছে না।"
+
+        data = response.json()
+
+        candidates = data.get("candidates", [])
+
+        if not candidates:
+            return "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।"
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+
+        if not parts:
+            return "দুঃখিত, কোনো উত্তর পাওয়া যায়নি।"
+
+        return parts[0].get("text", "দুঃখিত, উত্তর তৈরি করা যায়নি।")
+
+    except Exception as e:
+        print("Gemini Exception:", e)
+        return "দুঃখিত, AI সার্ভিসে সমস্যা হয়েছে।"
+
+
+# =========================
+# Facebook Messenger
+# =========================
+
+def send_message(recipient_id, text):
+    if not PAGE_ACCESS_TOKEN:
+        print("PAGE_ACCESS_TOKEN নেই।")
+        return
+
+    url = (
+        "https://graph.facebook.com/v20.0/me/messages"
+        f"?access_token={PAGE_ACCESS_TOKEN}"
+    )
+
+    payload = {
+        "recipient": {
+            "id": recipient_id
+        },
+        "message": {
+            "text": text
+        }
+    }
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            print("Facebook Error:", response.text)
+
+    except Exception as e:
+        print("Facebook Exception:", e)
+
+
+# =========================
+# Supabase + Boss Photo
+# =========================
 
 def supabase_headers():
     return {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal",
     }
 
-
-def supabase_request(
-    method,
-    table,
-    params=None,
-    json_data=None
-):
+def supabase_request(method, table, params=None, json_data=None):
     if not SUPABASE_URL or not SUPABASE_KEY:
-        raise RuntimeError(
-            "Supabase configuration missing"
-        )
+        raise RuntimeError("Supabase configuration missing")
+    return requests.request(method, f"{SUPABASE_URL}/rest/v1/{table}", headers=supabase_headers(), params=params, json=json_data, timeout=30)
 
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
+def is_boss_photo_registration(text):
+    t=(text or "").lower().strip()
+    return any(x in t for x in ["এটা আমি", "এটা আমার ছবি", "এটা বসের ছবি", "এটা বস এর ছবি", "save as boss", "save this as boss", "boss photo save"])
 
-    response = requests.request(
-        method,
-        url,
-        headers=supabase_headers(),
-        params=params,
-        json=json_data,
-        timeout=REQUEST_TIMEOUT,
-    )
+def is_boss_photo_request(text):
+    t=(text or "").lower().strip()
+    return any(x in t for x in ["বসের ছবি", "বস এর ছবি", "বসের ফটো", "বস এর ফটো", "বসের পিক", "বস এর পিক", "boss photo", "boss picture", "boss pic", "show me your boss", "show your boss", "তোমার বসের ছবি"])
 
-    if not response.ok:
-        logging.error(
-            "Supabase %s error: %s",
-            table,
-            response.text[:1000]
-        )
-
-    return response
-
-
-def extract_content(row):
-    for key in (
-        "content",
-        "message",
-        "text",
-        "memory"
-    ):
-        value = row.get(key)
-
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-
-    return ""
-
-
-def extract_role(row):
-    role = row.get("role")
-
-    if role in (
-        "user",
-        "assistant",
-        "model"
-    ):
-        return (
-            "assistant"
-            if role == "model"
-            else role
-        )
-
-    return "user"
-
-
-# ============================================================
-# MESSAGE MEMORY
-# ============================================================
-
-def save_message(
-    sender_id,
-    role,
-    content
-):
-    if not sender_id or not content:
-        return False
-
-    payload = {
-        "sender_id": sender_id,
-        "role": role,
-        "content": content,
-    }
-
+def upload_boss_photo(image_url):
     try:
-        response = supabase_request(
-            "POST",
-            "jarvis_messages",
-            json_data=payload
-        )
-
-        return response.ok
-
+        r=requests.get(image_url, timeout=30)
+        if r.status_code != 200:
+            print("Boss photo download error:", r.text[:500]); return None
+        import uuid
+        filename=f"boss_{uuid.uuid4().hex}.jpg"
+        content_type=r.headers.get("Content-Type", "image/jpeg")
+        storage_url=f"{SUPABASE_URL}/storage/v1/object/boss-photos/{filename}"
+        headers={"Authorization":f"Bearer {SUPABASE_KEY}","apikey":SUPABASE_KEY,"Content-Type":content_type,"x-upsert":"true"}
+        u=requests.post(storage_url, headers=headers, data=r.content, timeout=30)
+        if u.status_code not in (200,201):
+            print("Boss photo upload error:", u.text[:1000]); return None
+        public_url=f"{SUPABASE_URL}/storage/v1/object/public/boss-photos/{filename}"
+        d=supabase_request("POST","boss_photos",json_data={"photo_url":public_url,"label":"Anas"})
+        if d.status_code not in (200,201):
+            print("Boss photo DB error:", d.text[:1000]); return None
+        return public_url
     except Exception as e:
-        logging.error(
-            "Memory save message error: %s",
-            e
-        )
+        print("Boss photo save exception:",e); return None
 
-        return False
-
-
-def get_conversation_history(sender_id):
-
-    if not sender_id:
-        return []
-
-    params = {
-        "sender_id": f"eq.{sender_id}",
-        "order": "created_at.asc",
-        "limit": str(MAX_HISTORY_MESSAGES),
-    }
-
+def get_boss_photo():
     try:
-        response = supabase_request(
-            "GET",
-            "jarvis_messages",
-            params=params
-        )
-
-        if not response.ok:
-            return []
-
-        rows = response.json()
-
-        history = []
-
-        for row in rows:
-            content = extract_content(row)
-
-            if not content:
-                continue
-
-            role = extract_role(row)
-
-            if role in (
-                "user",
-                "assistant"
-            ):
-                history.append({
-                    "role": role,
-                    "content": content
-                })
-
-        return history[-MAX_HISTORY_MESSAGES:]
-
+        r=supabase_request("GET","boss_photos",params={"select":"photo_url,label,created_at","order":"created_at.desc","limit":"1"})
+        if r.status_code != 200:
+            print("Boss photo fetch error:",r.text[:1000]); return None
+        rows=r.json()
+        return rows[0].get("photo_url") if rows else None
     except Exception as e:
-        logging.error(
-            "History error: %s",
-            e
-        )
+        print("Boss photo fetch exception:",e); return None
 
-        return []
-
-
-# ============================================================
-# LONG TERM MEMORY
-# ============================================================
-
-def save_long_term_memory(
-    sender_id,
-    memory
-):
-    if not sender_id or not memory:
-        return False
-
-    payload = {
-        "sender_id": sender_id,
-        "memory": memory.strip()
-    }
-
+def send_image_message(recipient_id, image_url):
+    if not PAGE_ACCESS_TOKEN: return False
+    url="https://graph.facebook.com/v20.0/me/messages" f"?access_token={PAGE_ACCESS_TOKEN}"
+    payload={"recipient":{"id":recipient_id},"message":{"attachment":{"type":"image","payload":{"url":image_url,"is_reusable":True}}}}
     try:
-        response = supabase_request(
-            "POST",
-            "jarvis_memories",
-            json_data=payload
-        )
-
-        return response.ok
-
+        r=requests.post(url,json=payload,timeout=30)
+        if r.status_code != 200: print("Facebook Image Error:",r.text); return False
+        return True
     except Exception as e:
-        logging.error(
-            "Memory save error: %s",
-            e
-        )
+        print("Facebook Image Exception:",e); return False
 
-        return False
+# =========================
+# Traffic Detection
+# =========================
 
-
-def get_long_term_memories(sender_id):
-
-    if not sender_id:
-        return []
-
-    params = {
-        "sender_id": f"eq.{sender_id}",
-        "order": "created_at.desc",
-        "limit": str(MAX_MEMORY_ITEMS),
-    }
-
-    try:
-        response = supabase_request(
-            "GET",
-            "jarvis_memories",
-            params=params
-        )
-
-        if not response.ok:
-            return []
-
-        rows = response.json()
-
-        memories = []
-
-        for row in rows:
-            value = extract_content(row)
-
-            if value:
-                memories.append(value)
-
-        return memories
-
-    except Exception as e:
-        logging.error(
-            "Long-term memory error: %s",
-            e
-        )
-
-        return []
+TRAFFIC_KEYWORDS = [
+    "জ্যাম",
+    "জ্যাম আছে",
+    "জ্যাম কি",
+    "ট্রাফিক",
+    "ট্রাফিক আছে",
+    "রাস্তার অবস্থা",
+    "রাস্তায় জ্যাম",
+    "রাস্তায় জ্যাম",
+    "traffic",
+    "jam",
+    "traffic jam"
+]
 
 
-def should_save_memory(text):
+def is_traffic_question(text):
+    text_lower = text.lower()
 
-    lowered = text.lower()
+    for keyword in TRAFFIC_KEYWORDS:
+        if keyword.lower() in text_lower:
+            return True
 
-    keywords = [
-        "মনে রাখো",
-        "মনে রাখবে",
-        "মনে রাখ",
-        "ভুলবে না",
-        "remember this",
-        "remember that",
-        "remember",
-        "save this",
-        "store this",
-    ]
-
-    return any(
-        keyword in lowered
-        for keyword in keywords
-    )
+    return False
 
 
-def clean_memory(text):
+# =========================
+# Google Routes API
+# =========================
 
-    prefixes = [
-        "মনে রাখো",
-        "মনে রাখবে",
-        "মনে রাখ",
-        "ভুলবে না",
-        "remember this",
-        "remember that",
-        "remember",
-        "save this",
-        "store this",
-    ]
+def get_traffic(origin_lat, origin_lng, destination_text):
+    if not GOOGLE_MAPS_API_KEY:
+        return None, "GOOGLE_MAPS_API_KEY সেট করা হয়নি।"
 
-    result = text.strip()
-
-    for prefix in prefixes:
-        if result.lower().startswith(
-            prefix.lower()
-        ):
-            result = result[
-                len(prefix):
-            ].strip()
-
-            break
-
-    return result
-
-
-# ============================================================
-# CREATOR
-# ============================================================
-
-def is_creator_question(text):
-
-    lowered = text.lower()
-
-    keywords = [
-        "তোমাকে কে বানিয়েছে",
-        "তোমাকে কে বানাইছে",
-        "কে তোমাকে বানিয়েছে",
-        "কে তোমাকে বানাইছে",
-        "তোমার creator কে",
-        "creator কে",
-        "তোমার নির্মাতা কে",
-        "নির্মাতা কে",
-        "তোমাকে কে তৈরি করেছে",
-        "who created you",
-        "who made you",
-        "who built you",
-        "your creator",
-        "your maker",
-    ]
-
-    return any(
-        word in lowered
-        for word in keywords
-    )
-
-
-def creator_answer():
-
-    return (
-        "আমাকে Anas তৈরি করেছেন। ❤️\n"
-        "Gemini ও Groq আমার AI engine হিসেবে কাজ করে, "
-        "কিন্তু আমার নির্মাতা Anas।"
-    )
-
-
-# ============================================================
-# BUILD CONTEXT
-# ============================================================
-
-def build_prompt(
-    sender_id,
-    user_text
-):
-
-    history = get_conversation_history(
-        sender_id
-    )
-
-    memories = get_long_term_memories(
-        sender_id
-    )
-
-    parts = [
-        SYSTEM_PROMPT
-    ]
-
-    if memories:
-
-        parts.append(
-            "\nSaved memory:"
-        )
-
-        for memory in memories:
-            parts.append(
-                f"- {memory}"
-            )
-
-    if history:
-
-        parts.append(
-            "\nRecent conversation:"
-        )
-
-        for item in history:
-
-            label = (
-                "User"
-                if item["role"] == "user"
-                else "Jarvis"
-            )
-
-            parts.append(
-                f"{label}: "
-                f"{item['content']}"
-            )
-
-    parts.append(
-        "\nCurrent user message:"
-    )
-
-    parts.append(user_text)
-
-    return "\n".join(parts)
-
-
-# ============================================================
-# GEMINI TEXT
-# ============================================================
-
-def ask_gemini(prompt):
-
-    url = (
-        "https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{GEMINI_MODEL}:generateContent"
-    )
+    url = "https://routes.googleapis.com/directions/v2:computeRoutes"
 
     headers = {
         "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY,
+        "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+        "X-Goog-FieldMask": (
+            "routes.duration,"
+            "routes.staticDuration,"
+            "routes.distanceMeters,"
+            "routes.legs"
+        )
     }
 
     payload = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "text": prompt
-                    }
-                ]
+        "origin": {
+            "location": {
+                "latLng": {
+                    "latitude": float(origin_lat),
+                    "longitude": float(origin_lng)
+                }
             }
-        ],
-        "generationConfig": {
-            "maxOutputTokens": 1024
-        }
+        },
+        "destination": {
+            "address": destination_text
+        },
+        "travelMode": "DRIVE",
+        "routingPreference": "TRAFFIC_AWARE_OPTIMAL",
+        "computeAlternativeRoutes": False,
+        "languageCode": "bn-BD",
+        "units": "METRIC"
     }
-
-    response = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=REQUEST_TIMEOUT
-    )
-
-    if not response.ok:
-
-        raise RuntimeError(
-            f"Gemini HTTP "
-            f"{response.status_code}: "
-            f"{response.text[:1000]}"
-        )
-
-    data = response.json()
-
-    candidates = data.get(
-        "candidates",
-        []
-    )
-
-    if not candidates:
-        raise RuntimeError(
-            "Gemini returned no candidates"
-        )
-
-    parts = (
-        candidates[0]
-        .get("content", {})
-        .get("parts", [])
-    )
-
-    answer = "\n".join(
-        part.get("text", "")
-        for part in parts
-        if part.get("text")
-    ).strip()
-
-    if not answer:
-        raise RuntimeError(
-            "Gemini returned empty response"
-        )
-
-    logging.info(
-        "AI provider: Gemini / %s",
-        GEMINI_MODEL
-    )
-
-    return answer
-
-
-# ============================================================
-# GROQ TEXT FALLBACK
-# ============================================================
-
-def ask_groq(prompt):
-
-    url = (
-        "https://api.groq.com/openai/v1/"
-        "chat/completions"
-    )
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization":
-            f"Bearer {GROQ_API_KEY}"
-    }
-
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "max_completion_tokens": 1024,
-        "temperature": 0.5
-    }
-
-    response = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=REQUEST_TIMEOUT
-    )
-
-    if not response.ok:
-
-        raise RuntimeError(
-            f"Groq HTTP "
-            f"{response.status_code}: "
-            f"{response.text[:1000]}"
-        )
-
-    data = response.json()
-
-    choices = data.get(
-        "choices",
-        []
-    )
-
-    if not choices:
-        raise RuntimeError(
-            "Groq returned no choices"
-        )
-
-    answer = (
-        choices[0]
-        .get("message", {})
-        .get("content", "")
-    )
-
-    if not answer:
-        raise RuntimeError(
-            "Groq returned empty response"
-        )
-
-    logging.info(
-        "AI provider: Groq / %s",
-        GROQ_MODEL
-    )
-
-    return answer.strip()
-
-
-# ============================================================
-# TAVILY WEB SEARCH
-# ============================================================
-
-def tavily_search(query):
-
-    if not TAVILY_API_KEY:
-        raise RuntimeError(
-            "TAVILY_API_KEY missing"
-        )
-
-    url = "https://api.tavily.com/search"
-
-    payload = {
-        "api_key": TAVILY_API_KEY,
-        "query": query,
-        "search_depth": "advanced",
-        "topic": "news",
-        "max_results": 5,
-        "include_answer": False,
-        "include_raw_content": False,
-    }
-
-    response = requests.post(
-        url,
-        json=payload,
-        timeout=REQUEST_TIMEOUT
-    )
-
-    if not response.ok:
-
-        raise RuntimeError(
-            f"Tavily HTTP "
-            f"{response.status_code}: "
-            f"{response.text[:1000]}"
-        )
-
-    data = response.json()
-
-    results = data.get(
-        "results",
-        []
-    )
-
-    cleaned = []
-
-    for result in results:
-
-        title = result.get(
-            "title",
-            ""
-        )
-
-        url = result.get(
-            "url",
-            ""
-        )
-
-        content = result.get(
-            "content",
-            ""
-        )
-
-        if title and url:
-
-            cleaned.append({
-                "title": title,
-                "url": url,
-                "content": content
-            })
-
-    logging.info(
-        "Tavily found %d results",
-        len(cleaned)
-    )
-
-    return cleaned
-
-
-# ============================================================
-# NEWS SCREENSHOT -> GEMINI VISION
-# ============================================================
-
-def download_messenger_image(
-    attachment_url
-):
-
-    response = requests.get(
-        attachment_url,
-        timeout=REQUEST_TIMEOUT
-    )
-
-    if not response.ok:
-        raise RuntimeError(
-            "Could not download Messenger image"
-        )
-
-    content_type = (
-        response.headers.get(
-            "Content-Type",
-            "image/jpeg"
-        )
-    )
-
-    image_bytes = response.content
-
-    return (
-        content_type,
-        image_bytes
-    )
-
-
-def extract_news_from_image(
-    image_bytes,
-    mime_type
-):
-
-    if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY missing"
-        )
-
-    encoded = base64.b64encode(
-        image_bytes
-    ).decode("utf-8")
-
-    url = (
-        "https://generativelanguage.googleapis.com/"
-        f"v1beta/models/{GEMINI_MODEL}:generateContent"
-    )
-
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": GEMINI_API_KEY,
-    }
-
-    prompt = """
-এই ছবিটি একটি সংবাদ/নিউজ screenshot হতে পারে।
-
-ছবিটি ভালোভাবে দেখে বের করো:
-
-1. সম্পূর্ণ headline
-2. সংবাদমাধ্যমের নাম, যদি দেখা যায়
-3. ছবিতে দেখা গুরুত্বপূর্ণ নাম
-4. location
-5. date, যদি দেখা যায়
-6. headline-এর মূল বিষয়
-
-তারপর একটি ছোট search query তৈরি করো,
-যেটা দিয়ে online-এ এই খবরের original source
-খুঁজে পাওয়া সম্ভব।
-
-শুধু নিচের JSON format-এ উত্তর দাও:
-
-{
-  "headline": "...",
-  "publisher": "...",
-  "people": "...",
-  "location": "...",
-  "date": "...",
-  "search_query": "..."
-}
-"""
-
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "text": prompt
-                    },
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": encoded
-                        }
-                    }
-                ]
-            }
-        ],
-        "generationConfig": {
-            "maxOutputTokens": 700
-        }
-    }
-
-    response = requests.post(
-        url,
-        headers=headers,
-        json=payload,
-        timeout=REQUEST_TIMEOUT
-    )
-
-    if not response.ok:
-
-        raise RuntimeError(
-            f"Gemini Vision HTTP "
-            f"{response.status_code}: "
-            f"{response.text[:1000]}"
-        )
-
-    data = response.json()
-
-    candidates = data.get(
-        "candidates",
-        []
-    )
-
-    if not candidates:
-        raise RuntimeError(
-            "Gemini Vision returned no result"
-        )
-
-    parts = (
-        candidates[0]
-        .get("content", {})
-        .get("parts", [])
-    )
-
-    text = "\n".join(
-        part.get("text", "")
-        for part in parts
-        if part.get("text")
-    ).strip()
-
-    if not text:
-        raise RuntimeError(
-            "Could not read screenshot"
-        )
-
-    return text
-
-
-# ============================================================
-# EXTRACT JSON FROM GEMINI OUTPUT
-# ============================================================
-
-def extract_json_object(text):
-
-    text = text.strip()
-
-    text = re.sub(
-        r"```json",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    text = text.replace(
-        "```",
-        ""
-    ).strip()
-
-    start = text.find("{")
-    end = text.rfind("}")
-
-    if start == -1 or end == -1:
-        return None
-
-    candidate = text[
-        start:end + 1
-    ]
-
-    import json
 
     try:
-        return json.loads(candidate)
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            print("Google Routes Error:", response.text)
+            return None, "Google Maps থেকে traffic তথ্য পাওয়া যায়নি।"
+
+        data = response.json()
+
+        routes = data.get("routes", [])
+
+        if not routes:
+            return None, "এই রুটের কোনো তথ্য পাওয়া যায়নি।"
+
+        route = routes[0]
+
+        duration_text = route.get("duration", "")
+        static_duration_text = route.get("staticDuration", "")
+        distance_meters = route.get("distanceMeters", 0)
+
+        return {
+            "duration": duration_text,
+            "static_duration": static_duration_text,
+            "distance_meters": distance_meters
+        }, None
+
+    except Exception as e:
+        print("Traffic Exception:", e)
+        return None, "Google Maps-এর সাথে যোগাযোগ করা যাচ্ছে না।"
+
+
+# =========================
+# Traffic Reply
+# =========================
+
+def traffic_reply(traffic_data, destination):
+    duration = traffic_data.get("duration", "")
+    static_duration = traffic_data.get("static_duration", "")
+    distance = traffic_data.get("distance_meters", 0)
+
+    try:
+        distance_km = distance / 1000
     except Exception:
-        return None
-
-
-# ============================================================
-# NEWS SOURCE ANALYSIS
-# ============================================================
-
-def build_news_result(
-    extracted_text,
-    search_results
-):
-
-    import json
-
-    results_text = []
-
-    for index, result in enumerate(
-        search_results,
-        start=1
-    ):
-
-        results_text.append(
-            f"""
-SOURCE {index}
-Title: {result['title']}
-URL: {result['url']}
-Content: {result['content']}
-"""
-        )
-
-    prompt = f"""
-তুমি Jarvis।
-
-একটি news screenshot থেকে পাওয়া তথ্য:
-
-{extracted_text}
-
-অনলাইন search-এর ফলাফল:
-
-{"".join(results_text)}
-
-কাজ:
-
-1. Screenshot-এর খবরের সঙ্গে কোন source সবচেয়ে বেশি মিলে তা নির্ধারণ করো।
-2. Source-এর title ও URL উল্লেখ করো।
-3. Screenshot-এর তথ্য এবং online source-এর তথ্যের মধ্যে
-   mismatch থাকলে সেটা পরিষ্কারভাবে বলো।
-4. Source পাওয়া না গেলে সেটা বলো।
-5. কোনো URL বানিয়ে লিখবে না।
-6. Search result-এর URL-ই ব্যবহার করবে।
-7. সংক্ষিপ্ত বাংলায় উত্তর দাও।
-
-Format:
-
-📰 খবর:
-...
-
-🔎 মিল পাওয়া source:
-...
-
-🔗 Source:
-...
-
-📌 যাচাই:
-...
-"""
-
-    # Gemini দিয়ে source analysis
-    try:
-        return ask_gemini(prompt)
-
-    except Exception as gemini_error:
-
-        logging.error(
-            "Gemini news analysis failed: %s",
-            gemini_error
-        )
-
-    # Groq fallback
-    try:
-        return ask_groq(prompt)
-
-    except Exception as groq_error:
-
-        logging.error(
-            "Groq news analysis failed: %s",
-            groq_error
-        )
-
-    # Safe fallback
-    lines = [
-        "📰 Screenshot-এর সম্ভাব্য খবরের source:"
-    ]
-
-    for result in search_results[:3]:
-
-        lines.append(
-            f"\n• {result['title']}"
-        )
-
-        lines.append(
-            f"🔗 {result['url']}"
-        )
-
-    return "\n".join(lines)
-
-
-# ============================================================
-# PROCESS NEWS SCREENSHOT
-# ============================================================
-
-def process_news_image(
-    sender_id,
-    attachment_url
-):
-
-    try:
-
-        mime_type, image_bytes = (
-            download_messenger_image(
-                attachment_url
-            )
-        )
-
-        extracted = extract_news_from_image(
-            image_bytes,
-            mime_type
-        )
-
-        logging.info(
-            "News screenshot extracted: %s",
-            extracted[:1000]
-        )
-
-        parsed = extract_json_object(
-            extracted
-        )
-
-        if parsed:
-
-            search_query = (
-                parsed.get(
-                    "search_query",
-                    ""
-                )
-            ).strip()
-
-            if not search_query:
-
-                search_query = (
-                    parsed.get(
-                        "headline",
-                        ""
-                    )
-                ).strip()
-
-        else:
-            search_query = extracted
-
-        if not search_query:
-
-            return (
-                "বস, screenshot থেকে "
-                "নিউজের তথ্য ঠিকমতো পড়তে পারিনি।"
-            )
-
-        # ----------------------------------------------------
-        # SEARCH WEB
-        # ----------------------------------------------------
-
-        results = tavily_search(
-            search_query
-        )
-
-        if not results:
-
-            return (
-                "বস, screenshot থেকে খবরটি পড়তে "
-                "পেরেছি, কিন্তু online-এ নির্ভরযোগ্য "
-                "source খুঁজে পাইনি।"
-            )
-
-        # ----------------------------------------------------
-        # ANALYZE SOURCES
-        # ----------------------------------------------------
-
-        answer = build_news_result(
-            extracted,
-            results
-        )
-
-        return answer
-
-    except Exception as e:
-
-        logging.error(
-            "News screenshot error: %s",
-            e
-        )
-
-        return (
-            "বস, screenshot-টা পেয়েছি, কিন্তু "
-            "এখন online source খুঁজতে সমস্যা হচ্ছে।\n\n"
-            f"Error: {str(e)[:300]}"
-        )
-
-
-# ============================================================
-# MESSENGER SEND
-# ============================================================
-
-def send_message(
-    recipient_id,
-    text
-):
-
-    if not PAGE_ACCESS_TOKEN:
-        return False
-
-    text = str(text).strip()
-
-    if not text:
-        return False
-
-    chunks = []
-
-    max_length = 1800
-
-    while len(text) > max_length:
-
-        cut = text.rfind(
-            "\n",
-            0,
-            max_length
-        )
-
-        if cut < 500:
-            cut = max_length
-
-        chunks.append(
-            text[:cut].strip()
-        )
-
-        text = text[
-            cut:
-        ].strip()
-
-    if text:
-        chunks.append(text)
-
-    for chunk in chunks:
-
-        payload = {
-            "recipient": {
-                "id": recipient_id
-            },
-            "message": {
-                "text": chunk
-            }
-        }
+        distance_km = 0
+
+    def duration_to_seconds(value):
+        if not value:
+            return 0
 
         try:
+            return float(value.replace("s", ""))
+        except Exception:
+            return 0
 
-            response = requests.post(
-                MESSENGER_SEND_URL,
-                params={
-                    "access_token":
-                        PAGE_ACCESS_TOKEN
-                },
-                json=payload,
-                timeout=REQUEST_TIMEOUT
-            )
+    traffic_seconds = duration_to_seconds(duration)
+    normal_seconds = duration_to_seconds(static_duration)
 
-            if not response.ok:
+    if normal_seconds > 0:
+        delay_seconds = traffic_seconds - normal_seconds
+    else:
+        delay_seconds = 0
 
-                logging.error(
-                    "Messenger error: %s",
-                    response.text[:1000]
-                )
-
-                return False
-
-        except Exception as e:
-
-            logging.error(
-                "Messenger send error: %s",
-                e
-            )
-
-            return False
-
-    return True
-
-
-# ============================================================
-# WEBHOOK VERIFY
-# ============================================================
-
-@app.route(
-    "/webhook",
-    methods=["GET"]
-)
-def verify_webhook():
-
-    mode = request.args.get(
-        "hub.mode"
-    )
-
-    token = request.args.get(
-        "hub.verify_token"
-    )
-
-    challenge = request.args.get(
-        "hub.challenge"
-    )
-
-    if (
-        mode == "subscribe"
-        and token == VERIFY_TOKEN
-    ):
-
-        return challenge, 200
+    if delay_seconds <= 120:
+        traffic_status = "🟢 খুব বেশি জ্যাম নেই।"
+    elif delay_seconds <= 600:
+        traffic_status = "🟡 হালকা থেকে মাঝারি জ্যাম আছে।"
+    elif delay_seconds <= 1200:
+        traffic_status = "🟠 বেশ ভালো জ্যাম আছে।"
+    else:
+        traffic_status = "🔴 অনেক বেশি জ্যাম আছে।"
 
     return (
-        "Verification failed",
-        403
+        f"🚦 ট্রাফিক রিপোর্ট\n\n"
+        f"📍 গন্তব্য: {destination}\n"
+        f"🛣️ দূরত্ব: {distance_km:.1f} কিমি\n"
+        f"{traffic_status}\n\n"
+        f"Google Maps-এর বর্তমান traffic data অনুযায়ী "
+        f"এই রিপোর্ট দেওয়া হয়েছে।"
     )
 
 
-# ============================================================
-# MAIN WEBHOOK
-# ============================================================
+# =========================
+# Webhook Verification
+# =========================
 
-@app.route(
-    "/webhook",
-    methods=["POST"]
-)
+@app.route("/webhook", methods=["GET"])
+def verify_webhook():
+
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        return challenge, 200
+
+    return "Verification failed", 403
+
+
+# =========================
+# Messenger Webhook
+# =========================
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+    data = request.get_json(silent=True)
 
-    if data.get("object") != "page":
+    if not data:
         return "OK", 200
 
-    for entry in data.get(
-        "entry",
-        []
-    ):
+    if data.get("object") != "page":
+        return "Not a page event", 404
 
-        for event in entry.get(
-            "messaging",
-            []
-        ):
+    for entry in data.get("entry", []):
 
-            sender_id = (
-                event.get(
-                    "sender",
-                    {}
-                ).get("id")
-            )
+        for messaging_event in entry.get("messaging", []):
+
+            # =========================
+            # Sender
+            # =========================
+
+            sender = messaging_event.get("sender", {})
+            sender_id = sender.get("id")
 
             if not sender_id:
                 continue
 
-            message = event.get(
-                "message",
-                {}
-            )
+            # =========================
+            # Location Message
+            # =========================
 
-            # =================================================
-            # IMAGE MESSAGE
-            # =================================================
+            if "message" in messaging_event:
 
-            attachments = message.get(
-                "attachments",
-                []
-            )
+                message = messaging_event["message"]
 
-            image_attachment = None
+                attachments = message.get("attachments", [])
 
-            for attachment in attachments:
+                for attachment in attachments:
 
-                if attachment.get(
-                    "type"
-                ) == "image":
+                    if attachment.get("type") == "location":
 
-                    image_attachment = (
-                        attachment
-                        .get("payload", {})
-                        .get("url")
-                    )
+                        payload = attachment.get("payload", {})
+                        coordinates = payload.get("coordinates", {})
 
-                    break
+                        latitude = coordinates.get("lat")
+                        longitude = coordinates.get("long")
 
-            if image_attachment:
+                        if latitude is not None and longitude is not None:
 
-                logging.info(
-                    "Image received from %s",
-                    sender_id
-                )
+                            user_locations[sender_id] = {
+                                "latitude": latitude,
+                                "longitude": longitude
+                            }
 
-                answer = process_news_image(
-                    sender_id,
-                    image_attachment
-                )
+                            send_message(
+                                sender_id,
+                                "📍 তোমার Location পেয়েছি!\n"
+                                "এখন যে জায়গায় যেতে চাও, "
+                                "সেই জায়গার নাম লিখে পাঠাও।\n\n"
+                                "যেমন: Bashundhara City"
+                            )
 
-                save_message(
-                    sender_id,
-                    "user",
-                    "[News screenshot]"
-                )
+                        continue
 
-                save_message(
-                    sender_id,
-                    "assistant",
-                    answer
-                )
+            # =========================
+            # Message / Text / Image
+            # =========================
 
-                send_message(
-                    sender_id,
-                    answer
-                )
-
+            if "message" not in messaging_event:
                 continue
 
-            # =================================================
-            # TEXT MESSAGE
-            # =================================================
+            message = messaging_event["message"]
+            user_text = (message.get("text") or "").strip()
 
-            user_text = (
-                message.get(
-                    "text",
-                    ""
-                ) or ""
-            ).strip()
+            image_url = None
+            for attachment in message.get("attachments", []):
+                if attachment.get("type") == "image":
+                    image_url = attachment.get("payload", {}).get("url")
+                    break
+
+            # Admin can register a Boss photo by sending an image with a caption.
+            if image_url and ADMIN_ID and sender_id == ADMIN_ID and is_boss_photo_registration(user_text):
+                saved_url = upload_boss_photo(image_url)
+                send_message(sender_id, "ঠিক আছে বস ❤️\nএই ছবিটা এখন থেকে আপনার Boss/Anas photo হিসেবে মনে রাখলাম।" if saved_url else "বস, ছবিটা পেয়েছি কিন্তু Supabase-এ save করতে পারিনি।")
+                continue
+
+            # Anyone can request the saved Boss photo.
+            if user_text and is_boss_photo_request(user_text):
+                boss_photo = get_boss_photo()
+                if boss_photo:
+                    send_image_message(sender_id, boss_photo)
+                else:
+                    send_message(sender_id, "বসের কোনো ছবি এখনো save করা হয়নি।")
+                continue
 
             if not user_text:
                 continue
 
-            logging.info(
-                "Message from %s: %s",
-                sender_id,
-                user_text
-            )
+            # =========================
+            # Traffic Feature
+            # ALL USERS
+            # =========================
 
-            save_message(
-                sender_id,
-                "user",
-                user_text
-            )
+            if is_traffic_question(user_text):
 
-            # =================================================
-            # LONG-TERM MEMORY
-            # =================================================
-
-            if should_save_memory(
-                user_text
-            ):
-
-                memory = clean_memory(
-                    user_text
-                )
-
-                if memory:
-
-                    saved = (
-                        save_long_term_memory(
-                            sender_id,
-                            memory
-                        )
-                    )
-
-                    if saved:
-
-                        answer = (
-                            "ঠিক আছে বস ❤️ "
-                            "আমি এটা মনে রাখলাম।"
-                        )
-
-                    else:
-
-                        answer = (
-                            "বস, মনে রাখতে চেয়েছিলাম "
-                            "কিন্তু memory database-এ "
-                            "save করতে পারিনি।"
-                        )
-
-                    save_message(
-                        sender_id,
-                        "assistant",
-                        answer
-                    )
+                if sender_id not in user_locations:
 
                     send_message(
                         sender_id,
-                        answer
+                        "🚦 জ্যামের অবস্থা দেখতে তোমার বর্তমান "
+                        "Location দরকার।\n\n"
+                        "Messenger-এর 📎/Location অপশন থেকে "
+                        "তোমার Location পাঠাও।"
                     )
 
                     continue
 
-            # =================================================
-            # CREATOR
-            # =================================================
-
-            if is_creator_question(
-                user_text
-            ):
-
-                answer = creator_answer()
-
-                save_message(
+                send_message(
                     sender_id,
-                    "assistant",
-                    answer
+                    "🚗 ঠিক আছে! তোমার Location পেয়েছি।\n"
+                    "Google Maps-এর traffic data দেখে জানাচ্ছি..."
+                )
+
+                # If user included destination in the same message,
+                # try to use it. Otherwise ask for destination.
+                destination = user_text
+
+                generic_words = [
+                    "জ্যাম",
+                    "আছে",
+                    "কি",
+                    "কিনা",
+                    "কত",
+                    "ট্রাফিক",
+                    "বল",
+                    "দেখ",
+                    "দেখো",
+                    "জানাও",
+                    "রাস্তা",
+                    "রাস্তায়",
+                    "রাস্তায়",
+                    "traffic",
+                    "jam"
+                ]
+
+                cleaned_words = [
+                    word
+                    for word in destination.split()
+                    if word.lower() not in generic_words
+                ]
+
+                destination = " ".join(cleaned_words).strip()
+
+                if len(destination) < 3:
+
+                    send_message(
+                        sender_id,
+                        "📍 তোমার Location পেয়েছি।\n\n"
+                        "এখন গন্তব্যের নাম লিখো।\n"
+                        "যেমন:\n"
+                        "➡️ Farmgate\n"
+                        "➡️ Gulshan 1\n"
+                        "➡️ Airport"
+                    )
+
+                    continue
+
+                location = user_locations[sender_id]
+
+                traffic_data, error = get_traffic(
+                    location["latitude"],
+                    location["longitude"],
+                    destination
+                )
+
+                if error:
+
+                    send_message(
+                        sender_id,
+                        "⚠️ " + error
+                    )
+
+                    continue
+
+                reply = traffic_reply(
+                    traffic_data,
+                    destination
                 )
 
                 send_message(
                     sender_id,
-                    answer
+                    reply
                 )
 
                 continue
 
-            # =================================================
-            # NORMAL AI
-            # =================================================
+            # =========================
+            # Admin Mode
+            # =========================
 
-            prompt = build_prompt(
-                sender_id,
-                user_text
-            )
+            if ADMIN_ID and sender_id == ADMIN_ID:
 
-            try:
+                admin_prompt = """
+তুমি এখন তোমার Admin-এর সাথে কথা বলছো।
 
-                answer = ask_gemini(
-                    prompt
+Admin-এর সাথে সম্মানজনক কিন্তু বন্ধুসুলভভাবে কথা বলবে।
+Admin-এর প্রশ্নের সর্বোচ্চ সাহায্য করবে।
+
+Admin চাইলে programming, debugging, server,
+Facebook Messenger, Google Maps, Gemini API
+এবং JARVIS সম্পর্কিত বিষয়ে সাহায্য করবে।
+"""
+
+                response = ask_gemini(
+                    user_text,
+                    admin_prompt
                 )
 
-            except Exception as gemini_error:
-
-                logging.error(
-                    "Gemini failed: %s",
-                    gemini_error
+                send_message(
+                    sender_id,
+                    response
                 )
 
-                try:
+                continue
 
-                    answer = ask_groq(
-                        prompt
-                    )
+            # =========================
+            # Normal User
+            # =========================
 
-                except Exception as groq_error:
-
-                    logging.error(
-                        "Groq failed: %s",
-                        groq_error
-                    )
-
-                    answer = (
-                        "দুঃখিত বস, এই মুহূর্তে "
-                        "আমার AI engine-গুলো "
-                        "ব্যবহার করা যাচ্ছে না।"
-                    )
-
-            save_message(
-                sender_id,
-                "assistant",
-                answer
-            )
+            response = ask_gemini(user_text)
 
             send_message(
                 sender_id,
-                answer
+                response
             )
 
     return "OK", 200
 
 
-# ============================================================
-# HOME / HEALTH
-# ============================================================
+# =========================
+# Home / Health Check
+# =========================
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def home():
-
-    return {
-        "status": "running",
-        "jarvis": "Showman-AI",
-        "creator": "Anas",
-        "gemini": GEMINI_MODEL,
-        "groq": GROQ_MODEL,
-        "web_search": (
-            "Tavily"
-            if TAVILY_API_KEY
-            else "not configured"
-        ),
-        "memory": (
-            "Supabase"
-            if SUPABASE_KEY
-            else "not configured"
-        ),
-    }, 200
+    return "JARVIS is running successfully."
 
 
-# ============================================================
-# RUN
-# ============================================================
+# =========================
+# Run App
+# =========================
 
 if __name__ == "__main__":
 
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000"
-        )
-    )
-
-    logging.info(
-        "Starting Jarvis..."
-    )
-
-    logging.info(
-        "Creator: Anas"
-    )
-
-    logging.info(
-        "Gemini: %s",
-        GEMINI_MODEL
-    )
-
-    logging.info(
-        "Groq: %s",
-        GROQ_MODEL
-    )
-
-    logging.info(
-        "Tavily: %s",
-        "configured"
-        if TAVILY_API_KEY
-        else "missing"
-    )
+    port = int(os.getenv("PORT", 5000))
 
     app.run(
         host="0.0.0.0",
