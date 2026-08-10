@@ -16,6 +16,8 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SECRET_KEY", "").strip() or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 
@@ -102,7 +104,9 @@ def ask_gemini(user_text, extra_prompt=""):
 
         if response.status_code != 200:
             print("Gemini Error:", response.text)
-            return "দুঃখিত, এই মুহূর্তে AI উত্তর দিতে পারছে না।"
+            raise RuntimeError(
+    f"Gemini HTTP {response.status_code}: {response.text[:1000]}"
+)
 
         data = response.json()
 
@@ -120,7 +124,116 @@ def ask_gemini(user_text, extra_prompt=""):
 
     except Exception as e:
         print("Gemini Exception:", e)
-        return "দুঃখিত, AI সার্ভিসে সমস্যা হয়েছে।"
+    raise
+# =========================
+# Groq AI Fallback
+# =========================
+
+def ask_groq(user_text, extra_prompt=""):
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY সেট করা হয়নি।")
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {GROQ_API_KEY}"
+    }
+
+    prompt = SYSTEM_PROMPT
+
+    if extra_prompt:
+        prompt += "\n\n" + extra_prompt
+
+    prompt += "\n\nব্যবহারকারীর বার্তা:\n" + user_text
+
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "temperature": 0.7,
+        "max_tokens": 1024
+    }
+
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Groq HTTP {response.status_code}: "
+                f"{response.text[:1000]}"
+            )
+
+        data = response.json()
+
+        choices = data.get("choices", [])
+
+        if not choices:
+            raise RuntimeError("Groq কোনো উত্তর দেয়নি।")
+
+        answer = (
+            choices[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+
+        if not answer:
+            raise RuntimeError("Groq empty response দিয়েছে।")
+
+        print("AI Provider: Groq /", GROQ_MODEL)
+
+        return answer
+
+    except Exception as e:
+        print("Groq Exception:", e)
+        raise
+    # =========================
+# AI Automatic Fallback
+# =========================
+
+def ask_ai(user_text, extra_prompt=""):
+
+    try:
+        # প্রথমে Gemini
+        return ask_gemini(
+            user_text,
+            extra_prompt
+        )
+
+    except Exception as gemini_error:
+
+        print("Gemini failed:", gemini_error)
+
+        # Gemini ব্যর্থ হলে Groq
+        try:
+            return ask_groq(
+                user_text,
+                extra_prompt
+            )
+
+        except Exception as groq_error:
+
+            print("Groq failed:", groq_error)
+
+            return (
+                "দুঃখিত বস ❤️ "
+                "এই মুহূর্তে Gemini এবং Groq—"
+                "দুই AI engine-এই সমস্যা হচ্ছে।"
+            )
 
 
 # =========================
@@ -613,10 +726,10 @@ Facebook Messenger, Google Maps, Gemini API
 এবং JARVIS সম্পর্কিত বিষয়ে সাহায্য করবে।
 """
 
-                response = ask_gemini(
-                    user_text,
-                    admin_prompt
-                )
+                response = ask_ai(
+    user_text,
+    admin_prompt
+)
 
                 send_message(
                     sender_id,
@@ -629,7 +742,7 @@ Facebook Messenger, Google Maps, Gemini API
             # Normal User
             # =========================
 
-            response = ask_gemini(user_text)
+            response = ask_ai(user_text)
 
             send_message(
                 sender_id,
