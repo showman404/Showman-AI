@@ -1,754 +1,1136 @@
 import os
+import re
+import base64
+import logging
 import requests
+
 from flask import Flask, request
 from dotenv import load_dotenv
-from supabase import create_client, Client
 
-# =========================================================
-# Environment Variables
-# =========================================================
+
+# ============================================================
+# LOAD ENV
+# ============================================================
 
 load_dotenv()
 
-PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-ADMIN_ID = os.getenv("ADMIN_ID")
+app = Flask(__name__)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
+
+# ============================================================
+# ENV
+# ============================================================
+
+PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN", "").strip()
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
     "gemini-3.6-flash"
+).strip()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "llama-3.3-70b-versatile"
+).strip()
+
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
+
+ADMIN_ID = os.getenv("ADMIN_ID", "").strip()
+
+SUPABASE_URL = os.getenv(
+    "SUPABASE_URL",
+    ""
+).strip().rstrip("/")
+
+SUPABASE_KEY = (
+    os.getenv("SUPABASE_SECRET_KEY", "").strip()
+    or
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 )
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# ============================================================
+# CONSTANTS
+# ============================================================
+
+MESSENGER_SEND_URL = (
+    "https://graph.facebook.com/v20.0/me/messages"
+)
+
+MAX_HISTORY_MESSAGES = 30
+MAX_MEMORY_ITEMS = 20
+REQUEST_TIMEOUT = 45
 
 
-# =========================================================
-# JARVIS Identity
-# =========================================================
+# ============================================================
+# JARVIS PERSONALITY
+# ============================================================
 
-CREATOR_NAME = "Anas"
+SYSTEM_PROMPT = """
+তুমি Jarvis — Anas-এর তৈরি ব্যক্তিগত AI assistant।
 
+তোমার নির্মাতা:
+Anas
 
-# =========================================================
-# Flask
-# =========================================================
+অত্যন্ত গুরুত্বপূর্ণ:
 
-app = Flask(__name__)
-
-
-# =========================================================
-# Supabase Connection
-# =========================================================
-
-supabase: Client | None = None
-
-if SUPABASE_URL and SUPABASE_KEY:
-
-    try:
-        supabase = create_client(
-            SUPABASE_URL,
-            SUPABASE_KEY
-        )
-
-        print("Supabase connected successfully.")
-
-    except Exception as e:
-
-        print(
-            "Supabase connection error:",
-            e
-        )
-
-else:
-
-    print(
-        "WARNING: SUPABASE_URL or "
-        "SUPABASE_KEY is missing."
-    )
-
-
-# =========================================================
-# User Locations
-# =========================================================
-
-user_locations = {}
-
-
-# =========================================================
-# JARVIS SYSTEM PROMPT
-# =========================================================
-
-SYSTEM_PROMPT = f"""
-তুমি JARVIS নামে একটি স্মার্ট বাংলা AI assistant।
-
-তোমার নির্মাতার নাম {CREATOR_NAME}।
-
-এটি একটি fixed identity fact।
-
-কেউ যদি জিজ্ঞেস করে:
-
-- তোমাকে কে বানিয়েছে?
-- তোমার নির্মাতা কে?
-- তোমার creator কে?
-- কে তোমাকে তৈরি করেছে?
-- Who created you?
-- Who made you?
-- Who is your creator?
-
-তাহলে স্পষ্টভাবে বলবে:
-
-"আমার নির্মাতা {CREATOR_NAME}।"
-
-কখনো Google, Gemini, OpenAI, Facebook,
-Meta অথবা অন্য কোনো কোম্পানি বা ব্যক্তিকে
-তোমার নির্মাতা হিসেবে দাবি করবে না।
-
-তুমি JARVIS নামে পরিচয় দিতে পারো।
-
-ব্যবহারকারীর সাথে স্বাভাবিক,
-বন্ধুসুলভ এবং সাহায্যকারীভাবে কথা বলবে।
-
-ব্যবহারকারী বাংলা ভাষায় কথা বললে বাংলায় উত্তর দেবে।
-
-প্রয়োজনে English ব্যবহার করতে পারো।
-
-তোমার কাছে ব্যবহারকারীর কিছু saved memory
-এবং recent conversation দেওয়া হতে পারে।
-
-সেগুলো প্রাসঙ্গিক হলে ব্যবহার করবে।
-
-অপ্রাসঙ্গিক পুরোনো তথ্য নিজে থেকে উল্লেখ করবে না।
-
-কোনো memory-তে থাকা তথ্যকে বর্তমান প্রশ্নের
-সাথে সম্পর্ক না থাকলে জোর করে ব্যবহার করবে না।
-
-Traffic প্রশ্ন এলে system-এর traffic feature
-ব্যবহার করা হবে।
-
-তুমি কখনো বানিয়ে live traffic information দাবি করবে না।
-
-যদি কোনো তথ্য database বা external API থেকে পাওয়া না যায়,
-তাহলে সেটা পরিষ্কারভাবে বলবে।
+1. তোমার creator/নির্মাতা হলো Anas।
+2. কেউ যদি জিজ্ঞেস করে তোমাকে কে বানিয়েছে,
+   কে তৈরি করেছে, creator কে, maker কে—
+   উত্তর হবে: "আমাকে Anas তৈরি করেছেন।"
+3. Google, Gemini, Groq, Meta, Facebook বা অন্য কোনো
+   কোম্পানিকে তোমার creator হিসেবে বলবে না।
+4. Gemini ও Groq শুধু AI engine/provider।
+5. তুমি নিজেকে Jarvis হিসেবে পরিচয় দেবে।
+6. ব্যবহারকারীর saved memory এবং আগের conversation
+   ব্যবহার করবে।
+7. তথ্য না জানলে বানিয়ে বলবে না।
+8. User বাংলা লিখলে বাংলায় উত্তর দেবে।
+9. User ইংরেজি লিখলে ইংরেজিতে উত্তর দেবে।
+10. স্বাভাবিক ও বন্ধুসুলভভাবে উত্তর দেবে।
 """
 
 
-# =========================================================
-# MEMORY: Save Message
-# =========================================================
+# ============================================================
+# SUPABASE
+# ============================================================
 
-def save_message(user_id, role, message):
-
-    if not supabase:
-        return False
-
-    try:
-
-        supabase.table(
-            "jarvis_messages"
-        ).insert({
-            "user_id": str(user_id),
-            "role": role,
-            "message": message
-        }).execute()
-
-        return True
-
-    except Exception as e:
-
-        print(
-            "Memory save message error:",
-            e
-        )
-
-        return False
+def supabase_headers():
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
 
 
-# =========================================================
-# MEMORY: Get Recent Messages
-# =========================================================
-
-def get_recent_messages(
-    user_id,
-    limit=20
+def supabase_request(
+    method,
+    table,
+    params=None,
+    json_data=None
 ):
-
-    if not supabase:
-        return []
-
-    try:
-
-        response = (
-            supabase
-            .table("jarvis_messages")
-            .select(
-                "role,message,created_at"
-            )
-            .eq(
-                "user_id",
-                str(user_id)
-            )
-            .order(
-                "created_at",
-                desc=True
-            )
-            .limit(limit)
-            .execute()
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError(
+            "Supabase configuration missing"
         )
 
-        rows = response.data or []
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
 
-        rows.reverse()
-
-        return rows
-
-    except Exception as e:
-
-        print(
-            "Memory read messages error:",
-            e
-        )
-
-        return []
-
-
-# =========================================================
-# MEMORY: Save Permanent Memory
-# =========================================================
-
-def save_memory(
-    user_id,
-    memory
-):
-
-    if not supabase:
-        return False
-
-    try:
-
-        supabase.table(
-            "jarvis_memories"
-        ).insert({
-            "user_id": str(user_id),
-            "memory": memory
-        }).execute()
-
-        return True
-
-    except Exception as e:
-
-        print(
-            "Memory save error:",
-            e
-        )
-
-        return False
-
-
-# =========================================================
-# MEMORY: Get Saved Memories
-# =========================================================
-
-def get_memories(
-    user_id,
-    limit=30
-):
-
-    if not supabase:
-        return []
-
-    try:
-
-        response = (
-            supabase
-            .table("jarvis_memories")
-            .select(
-                "id,memory,created_at"
-            )
-            .eq(
-                "user_id",
-                str(user_id)
-            )
-            .order(
-                "created_at",
-                desc=False
-            )
-            .limit(limit)
-            .execute()
-        )
-
-        return response.data or []
-
-    except Exception as e:
-
-        print(
-            "Memory read error:",
-            e
-        )
-
-        return []
-
-
-# =========================================================
-# MEMORY: Delete Saved Memories
-# =========================================================
-
-def delete_memories(user_id):
-
-    if not supabase:
-        return False
-
-    try:
-
-        supabase.table(
-            "jarvis_memories"
-        ).delete().eq(
-            "user_id",
-            str(user_id)
-        ).execute()
-
-        return True
-
-    except Exception as e:
-
-        print(
-            "Memory delete error:",
-            e
-        )
-
-        return False
-
-
-# =========================================================
-# MEMORY: Delete Conversation
-# =========================================================
-
-def delete_conversation(user_id):
-
-    if not supabase:
-        return False
-
-    try:
-
-        supabase.table(
-            "jarvis_messages"
-        ).delete().eq(
-            "user_id",
-            str(user_id)
-        ).execute()
-
-        return True
-
-    except Exception as e:
-
-        print(
-            "Conversation delete error:",
-            e
-        )
-
-        return False
-
-
-# =========================================================
-# MEMORY CONTEXT
-# =========================================================
-
-def build_memory_context(user_id):
-
-    memories = get_memories(
-        user_id
+    response = requests.request(
+        method,
+        url,
+        headers=supabase_headers(),
+        params=params,
+        json=json_data,
+        timeout=REQUEST_TIMEOUT,
     )
 
-    messages = get_recent_messages(
-        user_id,
-        20
-    )
-
-    context = ""
-
-
-    # -----------------------------------------------------
-    # Permanent Memories
-    # -----------------------------------------------------
-
-    if memories:
-
-        context += (
-            "\n\n"
-            "===== SAVED USER MEMORY =====\n"
+    if not response.ok:
+        logging.error(
+            "Supabase %s error: %s",
+            table,
+            response.text[:1000]
         )
 
-        for item in memories:
+    return response
 
-            memory_text = item.get(
-                "memory",
-                ""
-            ).strip()
 
-            if memory_text:
+def extract_content(row):
+    for key in (
+        "content",
+        "message",
+        "text",
+        "memory"
+    ):
+        value = row.get(key)
 
-                context += (
-                    f"- {memory_text}\n"
-                )
+        if isinstance(value, str) and value.strip():
+            return value.strip()
 
-        context += (
-            "===== END SAVED MEMORY =====\n"
+    return ""
+
+
+def extract_role(row):
+    role = row.get("role")
+
+    if role in (
+        "user",
+        "assistant",
+        "model"
+    ):
+        return (
+            "assistant"
+            if role == "model"
+            else role
         )
 
+    return "user"
 
-    # -----------------------------------------------------
-    # Recent Conversation
-    # -----------------------------------------------------
 
-    if messages:
+# ============================================================
+# MESSAGE MEMORY
+# ============================================================
 
-        context += (
-            "\n\n"
-            "===== RECENT CONVERSATION =====\n"
+def save_message(
+    sender_id,
+    role,
+    content
+):
+    if not sender_id or not content:
+        return False
+
+    payload = {
+        "sender_id": sender_id,
+        "role": role,
+        "content": content,
+    }
+
+    try:
+        response = supabase_request(
+            "POST",
+            "jarvis_messages",
+            json_data=payload
         )
 
-        for item in messages:
+        return response.ok
 
-            role = item.get(
-                "role",
-                ""
-            )
+    except Exception as e:
+        logging.error(
+            "Memory save message error: %s",
+            e
+        )
 
-            message = item.get(
-                "message",
-                ""
-            ).strip()
+        return False
 
 
-            if not message:
+def get_conversation_history(sender_id):
+
+    if not sender_id:
+        return []
+
+    params = {
+        "sender_id": f"eq.{sender_id}",
+        "order": "created_at.asc",
+        "limit": str(MAX_HISTORY_MESSAGES),
+    }
+
+    try:
+        response = supabase_request(
+            "GET",
+            "jarvis_messages",
+            params=params
+        )
+
+        if not response.ok:
+            return []
+
+        rows = response.json()
+
+        history = []
+
+        for row in rows:
+            content = extract_content(row)
+
+            if not content:
                 continue
 
+            role = extract_role(row)
 
-            if role == "user":
+            if role in (
+                "user",
+                "assistant"
+            ):
+                history.append({
+                    "role": role,
+                    "content": content
+                })
 
-                context += (
-                    f"User: {message}\n"
-                )
+        return history[-MAX_HISTORY_MESSAGES:]
 
-
-            elif role == "assistant":
-
-                context += (
-                    f"JARVIS: {message}\n"
-                )
-
-
-        context += (
-            "===== END RECENT CONVERSATION =====\n"
+    except Exception as e:
+        logging.error(
+            "History error: %s",
+            e
         )
 
+        return []
 
-    return context
+
+# ============================================================
+# LONG TERM MEMORY
+# ============================================================
+
+def save_long_term_memory(
+    sender_id,
+    memory
+):
+    if not sender_id or not memory:
+        return False
+
+    payload = {
+        "sender_id": sender_id,
+        "memory": memory.strip()
+    }
+
+    try:
+        response = supabase_request(
+            "POST",
+            "jarvis_memories",
+            json_data=payload
+        )
+
+        return response.ok
+
+    except Exception as e:
+        logging.error(
+            "Memory save error: %s",
+            e
+        )
+
+        return False
 
 
-# =========================================================
-# MEMORY COMMAND DETECTION
-# =========================================================
+def get_long_term_memories(sender_id):
 
-def is_remember_command(text):
+    if not sender_id:
+        return []
+
+    params = {
+        "sender_id": f"eq.{sender_id}",
+        "order": "created_at.desc",
+        "limit": str(MAX_MEMORY_ITEMS),
+    }
+
+    try:
+        response = supabase_request(
+            "GET",
+            "jarvis_memories",
+            params=params
+        )
+
+        if not response.ok:
+            return []
+
+        rows = response.json()
+
+        memories = []
+
+        for row in rows:
+            value = extract_content(row)
+
+            if value:
+                memories.append(value)
+
+        return memories
+
+    except Exception as e:
+        logging.error(
+            "Long-term memory error: %s",
+            e
+        )
+
+        return []
+
+
+def should_save_memory(text):
+
+    lowered = text.lower()
 
     keywords = [
-
         "মনে রাখো",
-        "মনে রেখো",
         "মনে রাখবে",
-        "এটা মনে রাখো",
-        "এটা মনে রেখো",
-        "এটা মনে রাখ",
+        "মনে রাখ",
+        "ভুলবে না",
         "remember this",
-        "remember that"
-
+        "remember that",
+        "remember",
+        "save this",
+        "store this",
     ]
 
-    text_lower = text.lower()
-
     return any(
-        keyword.lower() in text_lower
+        keyword in lowered
         for keyword in keywords
     )
 
 
-# =========================================================
-# Extract Memory
-# =========================================================
-
-def extract_memory(text):
+def clean_memory(text):
 
     prefixes = [
-
-        "এটা মনে রাখো",
-        "এটা মনে রেখো",
-        "এটা মনে রাখ",
         "মনে রাখো",
-        "মনে রেখো",
         "মনে রাখবে",
+        "মনে রাখ",
+        "ভুলবে না",
         "remember this",
-        "remember that"
-
+        "remember that",
+        "remember",
+        "save this",
+        "store this",
     ]
 
     result = text.strip()
 
-
     for prefix in prefixes:
-
         if result.lower().startswith(
             prefix.lower()
         ):
-
             result = result[
                 len(prefix):
             ].strip()
 
             break
 
-
-    return result.strip(
-        " :,-"
-    )
+    return result
 
 
-# =========================================================
-# Show Memory Command
-# =========================================================
+# ============================================================
+# CREATOR
+# ============================================================
 
-def is_memory_view_command(text):
+def is_creator_question(text):
 
-    keywords = [
-
-        "আমার memory কী",
-        "আমার মেমোরি কী",
-        "আমার memory কি",
-        "আমার মেমোরি কি",
-        "কি কি মনে রেখেছ",
-        "কী কী মনে রেখেছ",
-        "আমি কী কী বলেছিলাম",
-        "what do you remember",
-        "show my memory"
-
-    ]
-
-    text_lower = text.lower()
-
-    return any(
-        keyword.lower() in text_lower
-        for keyword in keywords
-    )
-
-
-# =========================================================
-# Forget Memory Command
-# =========================================================
-
-def is_forget_command(text):
+    lowered = text.lower()
 
     keywords = [
-
-        "সব memory মুছে দাও",
-        "সব মেমোরি মুছে দাও",
-        "সব memory মুছে ফেল",
-        "সব মেমোরি মুছে ফেল",
-        "সবকিছু ভুলে যাও",
-        "সব ভুলে যাও",
-        "আমার memory মুছে দাও",
-        "আমার মেমোরি মুছে দাও",
-        "forget everything",
-        "forget all",
-        "clear memory"
-
+        "তোমাকে কে বানিয়েছে",
+        "তোমাকে কে বানাইছে",
+        "কে তোমাকে বানিয়েছে",
+        "কে তোমাকে বানাইছে",
+        "তোমার creator কে",
+        "creator কে",
+        "তোমার নির্মাতা কে",
+        "নির্মাতা কে",
+        "তোমাকে কে তৈরি করেছে",
+        "who created you",
+        "who made you",
+        "who built you",
+        "your creator",
+        "your maker",
     ]
 
-    text_lower = text.lower()
-
     return any(
-        keyword.lower() in text_lower
-        for keyword in keywords
+        word in lowered
+        for word in keywords
     )
 
 
-# =========================================================
-# GEMINI
-# =========================================================
+def creator_answer():
 
-def ask_gemini(
-    user_id,
-    user_text,
-    extra_prompt=""
+    return (
+        "আমাকে Anas তৈরি করেছেন। ❤️\n"
+        "Gemini ও Groq আমার AI engine হিসেবে কাজ করে, "
+        "কিন্তু আমার নির্মাতা Anas।"
+    )
+
+
+# ============================================================
+# BUILD CONTEXT
+# ============================================================
+
+def build_prompt(
+    sender_id,
+    user_text
 ):
 
-    if not GEMINI_API_KEY:
+    history = get_conversation_history(
+        sender_id
+    )
 
-        return (
-            "দুঃখিত, Gemini API Key "
-            "সেট করা হয়নি।"
+    memories = get_long_term_memories(
+        sender_id
+    )
+
+    parts = [
+        SYSTEM_PROMPT
+    ]
+
+    if memories:
+
+        parts.append(
+            "\nSaved memory:"
         )
 
+        for memory in memories:
+            parts.append(
+                f"- {memory}"
+            )
+
+    if history:
+
+        parts.append(
+            "\nRecent conversation:"
+        )
+
+        for item in history:
+
+            label = (
+                "User"
+                if item["role"] == "user"
+                else "Jarvis"
+            )
+
+            parts.append(
+                f"{label}: "
+                f"{item['content']}"
+            )
+
+    parts.append(
+        "\nCurrent user message:"
+    )
+
+    parts.append(user_text)
+
+    return "\n".join(parts)
+
+
+# ============================================================
+# GEMINI TEXT
+# ============================================================
+
+def ask_gemini(prompt):
 
     url = (
         "https://generativelanguage.googleapis.com/"
-        "v1beta/"
-        f"models/{GEMINI_MODEL}:generateContent"
-        f"?key={GEMINI_API_KEY}"
+        f"v1beta/models/{GEMINI_MODEL}:generateContent"
     )
 
-
-    # -----------------------------------------------------
-    # Build Prompt
-    # -----------------------------------------------------
-
-    prompt = SYSTEM_PROMPT
-
-
-    memory_context = build_memory_context(
-        user_id
-    )
-
-
-    if memory_context:
-
-        prompt += memory_context
-
-
-    if extra_prompt:
-
-        prompt += (
-            "\n\n"
-            "===== EXTRA INSTRUCTIONS =====\n"
-        )
-
-        prompt += extra_prompt
-
-
-    prompt += (
-        "\n\n"
-        "===== CURRENT USER MESSAGE =====\n"
-    )
-
-    prompt += user_text
-
-
-    # -----------------------------------------------------
-    # Gemini Payload
-    # -----------------------------------------------------
-
-    payload = {
-
-        "contents": [
-
-            {
-
-                "parts": [
-
-                    {
-
-                        "text": prompt
-
-                    }
-
-                ]
-
-            }
-
-        ],
-
-        "generationConfig": {
-
-            "temperature": 0.7,
-
-            "maxOutputTokens": 1024
-
-        }
-
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
     }
 
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "maxOutputTokens": 1024
+        }
+    }
+
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=REQUEST_TIMEOUT
+    )
+
+    if not response.ok:
+
+        raise RuntimeError(
+            f"Gemini HTTP "
+            f"{response.status_code}: "
+            f"{response.text[:1000]}"
+        )
+
+    data = response.json()
+
+    candidates = data.get(
+        "candidates",
+        []
+    )
+
+    if not candidates:
+        raise RuntimeError(
+            "Gemini returned no candidates"
+        )
+
+    parts = (
+        candidates[0]
+        .get("content", {})
+        .get("parts", [])
+    )
+
+    answer = "\n".join(
+        part.get("text", "")
+        for part in parts
+        if part.get("text")
+    ).strip()
+
+    if not answer:
+        raise RuntimeError(
+            "Gemini returned empty response"
+        )
+
+    logging.info(
+        "AI provider: Gemini / %s",
+        GEMINI_MODEL
+    )
+
+    return answer
+
+
+# ============================================================
+# GROQ TEXT FALLBACK
+# ============================================================
+
+def ask_groq(prompt):
+
+    url = (
+        "https://api.groq.com/openai/v1/"
+        "chat/completions"
+    )
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization":
+            f"Bearer {GROQ_API_KEY}"
+    }
+
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "max_completion_tokens": 1024,
+        "temperature": 0.5
+    }
+
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=REQUEST_TIMEOUT
+    )
+
+    if not response.ok:
+
+        raise RuntimeError(
+            f"Groq HTTP "
+            f"{response.status_code}: "
+            f"{response.text[:1000]}"
+        )
+
+    data = response.json()
+
+    choices = data.get(
+        "choices",
+        []
+    )
+
+    if not choices:
+        raise RuntimeError(
+            "Groq returned no choices"
+        )
+
+    answer = (
+        choices[0]
+        .get("message", {})
+        .get("content", "")
+    )
+
+    if not answer:
+        raise RuntimeError(
+            "Groq returned empty response"
+        )
+
+    logging.info(
+        "AI provider: Groq / %s",
+        GROQ_MODEL
+    )
+
+    return answer.strip()
+
+
+# ============================================================
+# TAVILY WEB SEARCH
+# ============================================================
+
+def tavily_search(query):
+
+    if not TAVILY_API_KEY:
+        raise RuntimeError(
+            "TAVILY_API_KEY missing"
+        )
+
+    url = "https://api.tavily.com/search"
+
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "search_depth": "advanced",
+        "topic": "news",
+        "max_results": 5,
+        "include_answer": False,
+        "include_raw_content": False,
+    }
+
+    response = requests.post(
+        url,
+        json=payload,
+        timeout=REQUEST_TIMEOUT
+    )
+
+    if not response.ok:
+
+        raise RuntimeError(
+            f"Tavily HTTP "
+            f"{response.status_code}: "
+            f"{response.text[:1000]}"
+        )
+
+    data = response.json()
+
+    results = data.get(
+        "results",
+        []
+    )
+
+    cleaned = []
+
+    for result in results:
+
+        title = result.get(
+            "title",
+            ""
+        )
+
+        url = result.get(
+            "url",
+            ""
+        )
+
+        content = result.get(
+            "content",
+            ""
+        )
+
+        if title and url:
+
+            cleaned.append({
+                "title": title,
+                "url": url,
+                "content": content
+            })
+
+    logging.info(
+        "Tavily found %d results",
+        len(cleaned)
+    )
+
+    return cleaned
+
+
+# ============================================================
+# NEWS SCREENSHOT -> GEMINI VISION
+# ============================================================
+
+def download_messenger_image(
+    attachment_url
+):
+
+    response = requests.get(
+        attachment_url,
+        timeout=REQUEST_TIMEOUT
+    )
+
+    if not response.ok:
+        raise RuntimeError(
+            "Could not download Messenger image"
+        )
+
+    content_type = (
+        response.headers.get(
+            "Content-Type",
+            "image/jpeg"
+        )
+    )
+
+    image_bytes = response.content
+
+    return (
+        content_type,
+        image_bytes
+    )
+
+
+def extract_news_from_image(
+    image_bytes,
+    mime_type
+):
+
+    if not GEMINI_API_KEY:
+        raise RuntimeError(
+            "GEMINI_API_KEY missing"
+        )
+
+    encoded = base64.b64encode(
+        image_bytes
+    ).decode("utf-8")
+
+    url = (
+        "https://generativelanguage.googleapis.com/"
+        f"v1beta/models/{GEMINI_MODEL}:generateContent"
+    )
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+    }
+
+    prompt = """
+এই ছবিটি একটি সংবাদ/নিউজ screenshot হতে পারে।
+
+ছবিটি ভালোভাবে দেখে বের করো:
+
+1. সম্পূর্ণ headline
+2. সংবাদমাধ্যমের নাম, যদি দেখা যায়
+3. ছবিতে দেখা গুরুত্বপূর্ণ নাম
+4. location
+5. date, যদি দেখা যায়
+6. headline-এর মূল বিষয়
+
+তারপর একটি ছোট search query তৈরি করো,
+যেটা দিয়ে online-এ এই খবরের original source
+খুঁজে পাওয়া সম্ভব।
+
+শুধু নিচের JSON format-এ উত্তর দাও:
+
+{
+  "headline": "...",
+  "publisher": "...",
+  "people": "...",
+  "location": "...",
+  "date": "...",
+  "search_query": "..."
+}
+"""
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    },
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": encoded
+                        }
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "maxOutputTokens": 700
+        }
+    }
+
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=REQUEST_TIMEOUT
+    )
+
+    if not response.ok:
+
+        raise RuntimeError(
+            f"Gemini Vision HTTP "
+            f"{response.status_code}: "
+            f"{response.text[:1000]}"
+        )
+
+    data = response.json()
+
+    candidates = data.get(
+        "candidates",
+        []
+    )
+
+    if not candidates:
+        raise RuntimeError(
+            "Gemini Vision returned no result"
+        )
+
+    parts = (
+        candidates[0]
+        .get("content", {})
+        .get("parts", [])
+    )
+
+    text = "\n".join(
+        part.get("text", "")
+        for part in parts
+        if part.get("text")
+    ).strip()
+
+    if not text:
+        raise RuntimeError(
+            "Could not read screenshot"
+        )
+
+    return text
+
+
+# ============================================================
+# EXTRACT JSON FROM GEMINI OUTPUT
+# ============================================================
+
+def extract_json_object(text):
+
+    text = text.strip()
+
+    text = re.sub(
+        r"```json",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = text.replace(
+        "```",
+        ""
+    ).strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start == -1 or end == -1:
+        return None
+
+    candidate = text[
+        start:end + 1
+    ]
+
+    import json
+
+    try:
+        return json.loads(candidate)
+    except Exception:
+        return None
+
+
+# ============================================================
+# NEWS SOURCE ANALYSIS
+# ============================================================
+
+def build_news_result(
+    extracted_text,
+    search_results
+):
+
+    import json
+
+    results_text = []
+
+    for index, result in enumerate(
+        search_results,
+        start=1
+    ):
+
+        results_text.append(
+            f"""
+SOURCE {index}
+Title: {result['title']}
+URL: {result['url']}
+Content: {result['content']}
+"""
+        )
+
+    prompt = f"""
+তুমি Jarvis।
+
+একটি news screenshot থেকে পাওয়া তথ্য:
+
+{extracted_text}
+
+অনলাইন search-এর ফলাফল:
+
+{"".join(results_text)}
+
+কাজ:
+
+1. Screenshot-এর খবরের সঙ্গে কোন source সবচেয়ে বেশি মিলে তা নির্ধারণ করো।
+2. Source-এর title ও URL উল্লেখ করো।
+3. Screenshot-এর তথ্য এবং online source-এর তথ্যের মধ্যে
+   mismatch থাকলে সেটা পরিষ্কারভাবে বলো।
+4. Source পাওয়া না গেলে সেটা বলো।
+5. কোনো URL বানিয়ে লিখবে না।
+6. Search result-এর URL-ই ব্যবহার করবে।
+7. সংক্ষিপ্ত বাংলায় উত্তর দাও।
+
+Format:
+
+📰 খবর:
+...
+
+🔎 মিল পাওয়া source:
+...
+
+🔗 Source:
+...
+
+📌 যাচাই:
+...
+"""
+
+    # Gemini দিয়ে source analysis
+    try:
+        return ask_gemini(prompt)
+
+    except Exception as gemini_error:
+
+        logging.error(
+            "Gemini news analysis failed: %s",
+            gemini_error
+        )
+
+    # Groq fallback
+    try:
+        return ask_groq(prompt)
+
+    except Exception as groq_error:
+
+        logging.error(
+            "Groq news analysis failed: %s",
+            groq_error
+        )
+
+    # Safe fallback
+    lines = [
+        "📰 Screenshot-এর সম্ভাব্য খবরের source:"
+    ]
+
+    for result in search_results[:3]:
+
+        lines.append(
+            f"\n• {result['title']}"
+        )
+
+        lines.append(
+            f"🔗 {result['url']}"
+        )
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# PROCESS NEWS SCREENSHOT
+# ============================================================
+
+def process_news_image(
+    sender_id,
+    attachment_url
+):
 
     try:
 
-        response = requests.post(
-
-            url,
-
-            json=payload,
-
-            timeout=60
-
+        mime_type, image_bytes = (
+            download_messenger_image(
+                attachment_url
+            )
         )
 
+        extracted = extract_news_from_image(
+            image_bytes,
+            mime_type
+        )
 
-        if response.status_code != 200:
+        logging.info(
+            "News screenshot extracted: %s",
+            extracted[:1000]
+        )
 
-            print(
-                "Gemini Error:",
-                response.text
-            )
+        parsed = extract_json_object(
+            extracted
+        )
+
+        if parsed:
+
+            search_query = (
+                parsed.get(
+                    "search_query",
+                    ""
+                )
+            ).strip()
+
+            if not search_query:
+
+                search_query = (
+                    parsed.get(
+                        "headline",
+                        ""
+                    )
+                ).strip()
+
+        else:
+            search_query = extracted
+
+        if not search_query:
 
             return (
-                "দুঃখিত, এই মুহূর্তে "
-                "AI উত্তর দিতে পারছে না।"
+                "বস, screenshot থেকে "
+                "নিউজের তথ্য ঠিকমতো পড়তে পারিনি।"
             )
 
+        # ----------------------------------------------------
+        # SEARCH WEB
+        # ----------------------------------------------------
 
-        data = response.json()
-
-
-        candidates = data.get(
-            "candidates",
-            []
+        results = tavily_search(
+            search_query
         )
 
-
-        if not candidates:
+        if not results:
 
             return (
-                "দুঃখিত, কোনো উত্তর "
-                "পাওয়া যায়নি।"
+                "বস, screenshot থেকে খবরটি পড়তে "
+                "পেরেছি, কিন্তু online-এ নির্ভরযোগ্য "
+                "source খুঁজে পাইনি।"
             )
 
+        # ----------------------------------------------------
+        # ANALYZE SOURCES
+        # ----------------------------------------------------
 
-        parts = (
-            candidates[0]
-            .get("content", {})
-            .get("parts", [])
+        answer = build_news_result(
+            extracted,
+            results
         )
 
-
-        if not parts:
-
-            return (
-                "দুঃখিত, কোনো উত্তর "
-                "পাওয়া যায়নি।"
-            )
-
-
-        return parts[0].get(
-            "text",
-            "দুঃখিত, উত্তর তৈরি করা যায়নি।"
-        )
-
+        return answer
 
     except Exception as e:
 
-        print(
-            "Gemini Exception:",
+        logging.error(
+            "News screenshot error: %s",
             e
         )
 
         return (
-            "দুঃখিত, AI সার্ভিসে "
-            "সমস্যা হয়েছে।"
+            "বস, screenshot-টা পেয়েছি, কিন্তু "
+            "এখন online source খুঁজতে সমস্যা হচ্ছে।\n\n"
+            f"Error: {str(e)[:300]}"
         )
 
 
-# =========================================================
-# FACEBOOK MESSENGER
-# =========================================================
+# ============================================================
+# MESSENGER SEND
+# ============================================================
 
 def send_message(
     recipient_id,
@@ -756,408 +1138,86 @@ def send_message(
 ):
 
     if not PAGE_ACCESS_TOKEN:
+        return False
 
-        print(
-            "PAGE_ACCESS_TOKEN নেই।"
+    text = str(text).strip()
+
+    if not text:
+        return False
+
+    chunks = []
+
+    max_length = 1800
+
+    while len(text) > max_length:
+
+        cut = text.rfind(
+            "\n",
+            0,
+            max_length
         )
 
-        return
+        if cut < 500:
+            cut = max_length
 
-
-    url = (
-        "https://graph.facebook.com/"
-        "v20.0/me/messages"
-        f"?access_token={PAGE_ACCESS_TOKEN}"
-    )
-
-
-    payload = {
-
-        "recipient": {
-
-            "id": recipient_id
-
-        },
-
-        "message": {
-
-            "text": text
-
-        }
-
-    }
-
-
-    try:
-
-        response = requests.post(
-
-            url,
-
-            json=payload,
-
-            timeout=30
-
+        chunks.append(
+            text[:cut].strip()
         )
 
+        text = text[
+            cut:
+        ].strip()
 
-        if response.status_code != 200:
+    if text:
+        chunks.append(text)
 
-            print(
-                "Facebook Error:",
-                response.text
-            )
+    for chunk in chunks:
 
-
-    except Exception as e:
-
-        print(
-            "Facebook Exception:",
-            e
-        )
-
-
-# =========================================================
-# TRAFFIC DETECTION
-# =========================================================
-
-TRAFFIC_KEYWORDS = [
-
-    "জ্যাম",
-    "জ্যাম আছে",
-    "জ্যাম কি",
-    "ট্রাফিক",
-    "ট্রাফিক আছে",
-    "রাস্তার অবস্থা",
-    "রাস্তায় জ্যাম",
-    "রাস্তায় জ্যাম",
-    "traffic",
-    "jam",
-    "traffic jam"
-
-]
-
-
-def is_traffic_question(text):
-
-    text_lower = text.lower()
-
-
-    for keyword in TRAFFIC_KEYWORDS:
-
-        if keyword.lower() in text_lower:
-
-            return True
-
-
-    return False
-
-
-# =========================================================
-# GOOGLE ROUTES API
-# =========================================================
-
-def get_traffic(
-    origin_lat,
-    origin_lng,
-    destination_text
-):
-
-    if not GOOGLE_MAPS_API_KEY:
-
-        return (
-            None,
-            "GOOGLE_MAPS_API_KEY "
-            "সেট করা হয়নি।"
-        )
-
-
-    url = (
-        "https://routes.googleapis.com/"
-        "directions/v2:computeRoutes"
-    )
-
-
-    headers = {
-
-        "Content-Type":
-            "application/json",
-
-        "X-Goog-Api-Key":
-            GOOGLE_MAPS_API_KEY,
-
-        "X-Goog-FieldMask":
-            (
-                "routes.duration,"
-                "routes.staticDuration,"
-                "routes.distanceMeters,"
-                "routes.legs"
-            )
-
-    }
-
-
-    payload = {
-
-        "origin": {
-
-            "location": {
-
-                "latLng": {
-
-                    "latitude":
-                        float(origin_lat),
-
-                    "longitude":
-                        float(origin_lng)
-
-                }
-
+        payload = {
+            "recipient": {
+                "id": recipient_id
+            },
+            "message": {
+                "text": chunk
             }
-
-        },
-
-        "destination": {
-
-            "address":
-                destination_text
-
-        },
-
-        "travelMode":
-            "DRIVE",
-
-        "routingPreference":
-            "TRAFFIC_AWARE_OPTIMAL",
-
-        "computeAlternativeRoutes":
-            False,
-
-        "languageCode":
-            "bn-BD",
-
-        "units":
-            "METRIC"
-
-    }
-
-
-    try:
-
-        response = requests.post(
-
-            url,
-
-            headers=headers,
-
-            json=payload,
-
-            timeout=30
-
-        )
-
-
-        if response.status_code != 200:
-
-            print(
-                "Google Routes Error:",
-                response.text
-            )
-
-            return (
-                None,
-                "Google Maps থেকে "
-                "traffic তথ্য পাওয়া যায়নি।"
-            )
-
-
-        data = response.json()
-
-
-        routes = data.get(
-            "routes",
-            []
-        )
-
-
-        if not routes:
-
-            return (
-                None,
-                "এই রুটের কোনো তথ্য পাওয়া যায়নি।"
-            )
-
-
-        route = routes[0]
-
-
-        return {
-
-            "duration":
-                route.get(
-                    "duration",
-                    ""
-                ),
-
-            "static_duration":
-                route.get(
-                    "staticDuration",
-                    ""
-                ),
-
-            "distance_meters":
-                route.get(
-                    "distanceMeters",
-                    0
-                )
-
-        }, None
-
-
-    except Exception as e:
-
-        print(
-            "Traffic Exception:",
-            e
-        )
-
-        return (
-            None,
-            "Google Maps-এর সাথে "
-            "যোগাযোগ করা যাচ্ছে না।"
-        )
-
-
-# =========================================================
-# TRAFFIC REPLY
-# =========================================================
-
-def traffic_reply(
-    traffic_data,
-    destination
-):
-
-    duration = traffic_data.get(
-        "duration",
-        ""
-    )
-
-
-    static_duration = traffic_data.get(
-        "static_duration",
-        ""
-    )
-
-
-    distance = traffic_data.get(
-        "distance_meters",
-        0
-    )
-
-
-    try:
-
-        distance_km = distance / 1000
-
-    except Exception:
-
-        distance_km = 0
-
-
-    def duration_to_seconds(value):
-
-        if not value:
-
-            return 0
-
+        }
 
         try:
 
-            return float(
-                value.replace(
-                    "s",
-                    ""
-                )
+            response = requests.post(
+                MESSENGER_SEND_URL,
+                params={
+                    "access_token":
+                        PAGE_ACCESS_TOKEN
+                },
+                json=payload,
+                timeout=REQUEST_TIMEOUT
             )
 
-        except Exception:
+            if not response.ok:
 
-            return 0
+                logging.error(
+                    "Messenger error: %s",
+                    response.text[:1000]
+                )
 
+                return False
 
-    traffic_seconds = (
-        duration_to_seconds(
-            duration
-        )
-    )
+        except Exception as e:
 
+            logging.error(
+                "Messenger send error: %s",
+                e
+            )
 
-    normal_seconds = (
-        duration_to_seconds(
-            static_duration
-        )
-    )
+            return False
 
-
-    if normal_seconds > 0:
-
-        delay_seconds = (
-            traffic_seconds -
-            normal_seconds
-        )
-
-    else:
-
-        delay_seconds = 0
+    return True
 
 
-    if delay_seconds <= 120:
-
-        traffic_status = (
-            "🟢 খুব বেশি জ্যাম নেই।"
-        )
-
-    elif delay_seconds <= 600:
-
-        traffic_status = (
-            "🟡 হালকা থেকে মাঝারি "
-            "জ্যাম আছে।"
-        )
-
-    elif delay_seconds <= 1200:
-
-        traffic_status = (
-            "🟠 বেশ ভালো জ্যাম আছে।"
-        )
-
-    else:
-
-        traffic_status = (
-            "🔴 অনেক বেশি জ্যাম আছে।"
-        )
-
-
-    return (
-
-        "🚦 ট্রাফিক রিপোর্ট\n\n"
-
-        f"📍 গন্তব্য: {destination}\n"
-
-        f"🛣️ দূরত্ব: "
-        f"{distance_km:.1f} কিমি\n"
-
-        f"{traffic_status}\n\n"
-
-        "Google Maps-এর বর্তমান "
-        "traffic data অনুযায়ী "
-        "এই রিপোর্ট দেওয়া হয়েছে।"
-
-    )
-
-
-# =========================================================
-# WEBHOOK VERIFICATION
-# =========================================================
+# ============================================================
+# WEBHOOK VERIFY
+# ============================================================
 
 @app.route(
     "/webhook",
@@ -1177,7 +1237,6 @@ def verify_webhook():
         "hub.challenge"
     )
 
-
     if (
         mode == "subscribe"
         and token == VERIFY_TOKEN
@@ -1185,16 +1244,15 @@ def verify_webhook():
 
         return challenge, 200
 
-
     return (
         "Verification failed",
         403
     )
 
 
-# =========================================================
-# MESSENGER WEBHOOK
-# =========================================================
+# ============================================================
+# MAIN WEBHOOK
+# ============================================================
 
 @app.route(
     "/webhook",
@@ -1204,70 +1262,38 @@ def webhook():
 
     data = request.get_json(
         silent=True
-    )
+    ) or {}
 
-
-    if not data:
-
+    if data.get("object") != "page":
         return "OK", 200
-
-
-    if data.get(
-        "object"
-    ) != "page":
-
-        return (
-            "Not a page event",
-            404
-        )
-
 
     for entry in data.get(
         "entry",
         []
     ):
 
-        for messaging_event in entry.get(
+        for event in entry.get(
             "messaging",
             []
         ):
 
-            # =================================================
-            # Sender
-            # =================================================
+            sender_id = (
+                event.get(
+                    "sender",
+                    {}
+                ).get("id")
+            )
 
-            sender = messaging_event.get(
-                "sender",
+            if not sender_id:
+                continue
+
+            message = event.get(
+                "message",
                 {}
             )
 
-
-            sender_id = sender.get(
-                "id"
-            )
-
-
-            if not sender_id:
-
-                continue
-
-
             # =================================================
-            # Message
-            # =================================================
-
-            if "message" not in messaging_event:
-
-                continue
-
-
-            message = messaging_event[
-                "message"
-            ]
-
-
-            # =================================================
-            # LOCATION
+            # IMAGE MESSAGE
             # =================================================
 
             attachments = message.get(
@@ -1275,652 +1301,271 @@ def webhook():
                 []
             )
 
+            image_attachment = None
 
             for attachment in attachments:
 
                 if attachment.get(
                     "type"
-                ) != "location":
+                ) == "image":
 
-                    continue
-
-
-                payload = attachment.get(
-                    "payload",
-                    {}
-                )
-
-
-                coordinates = payload.get(
-                    "coordinates",
-                    {}
-                )
-
-
-                latitude = coordinates.get(
-                    "lat"
-                )
-
-
-                longitude = coordinates.get(
-                    "long"
-                )
-
-
-                if (
-                    latitude is not None
-                    and longitude is not None
-                ):
-
-                    user_locations[
-                        sender_id
-                    ] = {
-
-                        "latitude":
-                            latitude,
-
-                        "longitude":
-                            longitude
-
-                    }
-
-
-                    send_message(
-
-                        sender_id,
-
-                        "📍 তোমার Location পেয়েছি!\n\n"
-                        "এখন যে জায়গায় যেতে চাও, "
-                        "সেই জায়গার নাম লিখে পাঠাও।\n\n"
-                        "যেমন: Bashundhara City"
-
+                    image_attachment = (
+                        attachment
+                        .get("payload", {})
+                        .get("url")
                     )
 
+                    break
 
-            # =================================================
-            # TEXT
-            # =================================================
+            if image_attachment:
 
-            if "text" not in message:
+                logging.info(
+                    "Image received from %s",
+                    sender_id
+                )
+
+                answer = process_news_image(
+                    sender_id,
+                    image_attachment
+                )
+
+                save_message(
+                    sender_id,
+                    "user",
+                    "[News screenshot]"
+                )
+
+                save_message(
+                    sender_id,
+                    "assistant",
+                    answer
+                )
+
+                send_message(
+                    sender_id,
+                    answer
+                )
 
                 continue
 
+            # =================================================
+            # TEXT MESSAGE
+            # =================================================
 
-            user_text = message[
-                "text"
-            ].strip()
-
+            user_text = (
+                message.get(
+                    "text",
+                    ""
+                ) or ""
+            ).strip()
 
             if not user_text:
-
                 continue
 
-
-            # =================================================
-            # SAVE USER MESSAGE
-            # =================================================
-
-            save_message(
-
+            logging.info(
+                "Message from %s: %s",
                 sender_id,
-
-                "user",
-
                 user_text
-
             )
 
+            save_message(
+                sender_id,
+                "user",
+                user_text
+            )
 
             # =================================================
-            # REMEMBER COMMAND
+            # LONG-TERM MEMORY
             # =================================================
 
-            if is_remember_command(
+            if should_save_memory(
                 user_text
             ):
 
-                memory_text = extract_memory(
+                memory = clean_memory(
                     user_text
                 )
 
+                if memory:
 
-                if len(memory_text) < 2:
-
-                    reply = (
-                        "🧠 কী বিষয়টা "
-                        "মনে রাখতে হবে?"
+                    saved = (
+                        save_long_term_memory(
+                            sender_id,
+                            memory
+                        )
                     )
 
-                else:
+                    if saved:
 
-                    success = save_memory(
-
-                        sender_id,
-
-                        memory_text
-
-                    )
-
-
-                    if success:
-
-                        reply = (
-                            "🧠 ঠিক আছে! "
-                            "এটা আমি মনে রাখলাম।"
+                        answer = (
+                            "ঠিক আছে বস ❤️ "
+                            "আমি এটা মনে রাখলাম।"
                         )
 
                     else:
 
-                        reply = (
-                            "⚠️ Memory save করতে "
-                            "সমস্যা হয়েছে।"
+                        answer = (
+                            "বস, মনে রাখতে চেয়েছিলাম "
+                            "কিন্তু memory database-এ "
+                            "save করতে পারিনি।"
                         )
-
-
-                save_message(
-
-                    sender_id,
-
-                    "assistant",
-
-                    reply
-
-                )
-
-
-                send_message(
-
-                    sender_id,
-
-                    reply
-
-                )
-
-
-                continue
-
-
-            # =================================================
-            # SHOW MEMORY
-            # =================================================
-
-            if is_memory_view_command(
-                user_text
-            ):
-
-                memories = get_memories(
-                    sender_id
-                )
-
-
-                if not memories:
-
-                    reply = (
-                        "🧠 এখনো তোমার জন্য "
-                        "কোনো আলাদা memory "
-                        "save করা নেই।"
-                    )
-
-                else:
-
-                    lines = [
-
-                        "🧠 তোমার সম্পর্কে "
-                        "আমি যেগুলো মনে রেখেছি:\n"
-
-                    ]
-
-
-                    for index, item in enumerate(
-                        memories,
-                        start=1
-                    ):
-
-                        memory_text = item.get(
-                            "memory",
-                            ""
-                        )
-
-
-                        lines.append(
-                            f"{index}. "
-                            f"{memory_text}"
-                        )
-
-
-                    reply = "\n".join(
-                        lines
-                    )
-
-
-                save_message(
-
-                    sender_id,
-
-                    "assistant",
-
-                    reply
-
-                )
-
-
-                send_message(
-
-                    sender_id,
-
-                    reply
-
-                )
-
-
-                continue
-
-
-            # =================================================
-            # FORGET MEMORY
-            # =================================================
-
-            if is_forget_command(
-                user_text
-            ):
-
-                memory_deleted = (
-                    delete_memories(
-                        sender_id
-                    )
-                )
-
-
-                conversation_deleted = (
-                    delete_conversation(
-                        sender_id
-                    )
-                )
-
-
-                if (
-                    memory_deleted
-                    and conversation_deleted
-                ):
-
-                    reply = (
-                        "🧹 ঠিক আছে। "
-                        "তোমার saved memory "
-                        "এবং conversation "
-                        "history মুছে দিয়েছি।"
-                    )
-
-                else:
-
-                    reply = (
-                        "⚠️ Memory মুছতে "
-                        "সমস্যা হয়েছে।"
-                    )
-
-
-                send_message(
-
-                    sender_id,
-
-                    reply
-
-                )
-
-
-                continue
-
-
-            # =================================================
-            # TRAFFIC
-            # =================================================
-
-            if is_traffic_question(
-                user_text
-            ):
-
-                if sender_id not in user_locations:
-
-                    reply = (
-
-                        "🚦 জ্যামের অবস্থা "
-                        "দেখতে তোমার বর্তমান "
-                        "Location দরকার।\n\n"
-
-                        "Messenger-এর "
-                        "📎/Location অপশন থেকে "
-                        "তোমার Location পাঠাও।"
-
-                    )
-
 
                     save_message(
-
                         sender_id,
-
                         "assistant",
-
-                        reply
-
+                        answer
                     )
-
 
                     send_message(
-
                         sender_id,
-
-                        reply
-
+                        answer
                     )
-
 
                     continue
 
-
-                send_message(
-
-                    sender_id,
-
-                    "🚗 ঠিক আছে! তোমার "
-                    "Location পেয়েছি।\n"
-                    "Google Maps-এর traffic "
-                    "data দেখে জানাচ্ছি..."
-
-                )
-
-
-                destination = user_text
-
-
-                generic_words = [
-
-                    "জ্যাম",
-                    "আছে",
-                    "কি",
-                    "কিনা",
-                    "কত",
-                    "ট্রাফিক",
-                    "বল",
-                    "দেখ",
-                    "দেখো",
-                    "জানাও",
-                    "রাস্তা",
-                    "রাস্তায়",
-                    "রাস্তায়",
-                    "traffic",
-                    "jam"
-
-                ]
-
-
-                cleaned_words = [
-
-                    word
-
-                    for word in destination.split()
-
-                    if word.lower()
-                    not in generic_words
-
-                ]
-
-
-                destination = (
-                    " ".join(
-                        cleaned_words
-                    ).strip()
-                )
-
-
-                if len(destination) < 3:
-
-                    reply = (
-
-                        "📍 তোমার Location পেয়েছি।\n\n"
-                        "এখন গন্তব্যের নাম লিখো।\n\n"
-                        "যেমন:\n"
-                        "➡️ Farmgate\n"
-                        "➡️ Gulshan 1\n"
-                        "➡️ Airport"
-
-                    )
-
-
-                    save_message(
-
-                        sender_id,
-
-                        "assistant",
-
-                        reply
-
-                    )
-
-
-                    send_message(
-
-                        sender_id,
-
-                        reply
-
-                    )
-
-
-                    continue
-
-
-                location = user_locations[
-                    sender_id
-                ]
-
-
-                traffic_data, error = get_traffic(
-
-                    location[
-                        "latitude"
-                    ],
-
-                    location[
-                        "longitude"
-                    ],
-
-                    destination
-
-                )
-
-
-                if error:
-
-                    reply = (
-                        "⚠️ " + error
-                    )
-
-
-                    save_message(
-
-                        sender_id,
-
-                        "assistant",
-
-                        reply
-
-                    )
-
-
-                    send_message(
-
-                        sender_id,
-
-                        reply
-
-                    )
-
-
-                    continue
-
-
-                reply = traffic_reply(
-
-                    traffic_data,
-
-                    destination
-
-                )
-
-
-                save_message(
-
-                    sender_id,
-
-                    "assistant",
-
-                    reply
-
-                )
-
-
-                send_message(
-
-                    sender_id,
-
-                    reply
-
-                )
-
-
-                continue
-
-
             # =================================================
-            # ADMIN
+            # CREATOR
             # =================================================
 
-            if (
-                ADMIN_ID
-                and sender_id == ADMIN_ID
+            if is_creator_question(
+                user_text
             ):
 
-                admin_prompt = f"""
-তুমি এখন তোমার নির্মাতা এবং Admin {CREATOR_NAME}-এর সাথে কথা বলছো।
-
-Admin-এর সাথে সম্মানজনক কিন্তু বন্ধুসুলভভাবে কথা বলবে।
-
-Programming, debugging, server,
-Facebook Messenger, Google Maps,
-Gemini API, Supabase এবং JARVIS
-সম্পর্কিত বিষয়ে সর্বোচ্চ সাহায্য করবে।
-
-মনে রাখবে:
-JARVIS-এর নির্মাতা হলেন {CREATOR_NAME}।
-"""
-
-
-                response = ask_gemini(
-
-                    sender_id,
-
-                    user_text,
-
-                    admin_prompt
-
-                )
-
+                answer = creator_answer()
 
                 save_message(
-
                     sender_id,
-
                     "assistant",
-
-                    response
-
+                    answer
                 )
-
 
                 send_message(
-
                     sender_id,
-
-                    response
-
+                    answer
                 )
-
 
                 continue
 
-
             # =================================================
-            # NORMAL USER
+            # NORMAL AI
             # =================================================
 
-            response = ask_gemini(
-
+            prompt = build_prompt(
                 sender_id,
-
                 user_text
-
             )
 
+            try:
 
-            # =================================================
-            # SAVE AI RESPONSE
-            # =================================================
+                answer = ask_gemini(
+                    prompt
+                )
+
+            except Exception as gemini_error:
+
+                logging.error(
+                    "Gemini failed: %s",
+                    gemini_error
+                )
+
+                try:
+
+                    answer = ask_groq(
+                        prompt
+                    )
+
+                except Exception as groq_error:
+
+                    logging.error(
+                        "Groq failed: %s",
+                        groq_error
+                    )
+
+                    answer = (
+                        "দুঃখিত বস, এই মুহূর্তে "
+                        "আমার AI engine-গুলো "
+                        "ব্যবহার করা যাচ্ছে না।"
+                    )
 
             save_message(
-
                 sender_id,
-
                 "assistant",
-
-                response
-
+                answer
             )
-
 
             send_message(
-
                 sender_id,
-
-                response
-
+                answer
             )
-
 
     return "OK", 200
 
 
-# =========================================================
-# HEALTH CHECK
-# =========================================================
+# ============================================================
+# HOME / HEALTH
+# ============================================================
 
-@app.route(
-    "/",
-    methods=["GET"]
-)
+@app.route("/")
 def home():
 
-    return (
-        "JARVIS is running successfully."
-    )
+    return {
+        "status": "running",
+        "jarvis": "Showman-AI",
+        "creator": "Anas",
+        "gemini": GEMINI_MODEL,
+        "groq": GROQ_MODEL,
+        "web_search": (
+            "Tavily"
+            if TAVILY_API_KEY
+            else "not configured"
+        ),
+        "memory": (
+            "Supabase"
+            if SUPABASE_KEY
+            else "not configured"
+        ),
+    }, 200
 
 
-# =========================================================
+# ============================================================
 # RUN
-# =========================================================
+# ============================================================
 
 if __name__ == "__main__":
 
     port = int(
         os.getenv(
             "PORT",
-            5000
+            "10000"
         )
     )
 
+    logging.info(
+        "Starting Jarvis..."
+    )
+
+    logging.info(
+        "Creator: Anas"
+    )
+
+    logging.info(
+        "Gemini: %s",
+        GEMINI_MODEL
+    )
+
+    logging.info(
+        "Groq: %s",
+        GROQ_MODEL
+    )
+
+    logging.info(
+        "Tavily: %s",
+        "configured"
+        if TAVILY_API_KEY
+        else "missing"
+    )
 
     app.run(
-
         host="0.0.0.0",
-
         port=port
-
     )
