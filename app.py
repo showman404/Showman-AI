@@ -1135,7 +1135,8 @@ def weather_reply(place):
 
 def is_traffic_question(text):
     t=(text or "").lower(); return any(x in t for x in ["জ্যাম","ট্রাফিক","traffic","traffic jam","রাস্তার অবস্থা"])
-
+# In-memory fallback for user locations
+user_locations = {}
 def save_location(sender_id,lat,lng):
     user_locations[str(sender_id)]={"latitude":lat,"longitude":lng}
     if SUPABASE_KEY:
